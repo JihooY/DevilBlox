@@ -1,0 +1,16 @@
+[project]
+name = "devilblox"
+version = "0.1.0"
+description = "DevilBlox Discord bot"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "discord.py>=2.4.0",
+    "motor>=3.6.0",
+    "pillow>=10.0.0",
+    "python-dotenv>=1.0.1",
+    "sshtunnel>=0.4.0",
+]
+
+[tool.uv]
+package = false

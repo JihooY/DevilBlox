@@ -1,0 +1,190 @@
+from __future__ import annotations
+
+from datetime import datetime, timezone
+
+
+def _now():
+    return datetime.now(timezone.utc)
+
+
+def keyed(guild_id: int, user_id: int) -> str:
+    return f"{guild_id}:{user_id}"
+
+
+class TicketStore:
+    def __init__(self, db):
+        self.collection = db["tickets"]
+
+    async def ensure_indexes(self):
+        await self.collection.create_index([("guild_id", 1), ("channel_id", 1)], unique=True)
+        await self.collection.create_index([("guild_id", 1), ("user_id", 1), ("kind", 1), ("status", 1)])
+        await self.collection.create_index([("guild_id", 1), ("seller_id", 1), ("kind", 1), ("status", 1)])
+
+    async def create(self, guild_id: int, kind: str, user_id: int, channel_id: int, **extra):
+        doc = {
+            "_id": f"{guild_id}:{channel_id}",
+            "guild_id": guild_id,
+            "kind": kind,
+            "user_id": user_id,
+            "channel_id": channel_id,
+            "status": "open",
+            "created_at": _now(),
+            "updated_at": _now(),
+            **extra,
+        }
+        await self.collection.update_one({"_id": doc["_id"]}, {"$set": doc}, upsert=True)
+        return doc
+
+    async def get_open_for_user(self, guild_id: int, user_id: int, kind: str):
+        return await self.collection.find_one(
+            {"guild_id": guild_id, "user_id": user_id, "kind": kind, "status": "open"}
+        )
+
+    async def get_by_channel(self, guild_id: int, channel_id: int, kind: str | None = None):
+        query = {"guild_id": guild_id, "channel_id": channel_id}
+        if kind:
+            query["kind"] = kind
+        return await self.collection.find_one(query)
+
+    async def close(self, guild_id: int, channel_id: int, **extra):
+        update = {"status": "closed", "closed_at": _now(), "updated_at": _now(), **extra}
+        await self.collection.update_one(
+            {"guild_id": guild_id, "channel_id": channel_id},
+            {"$set": update},
+        )
+
+    async def count_open_for_seller(self, guild_id: int, seller_id: int) -> int:
+        return await self.collection.count_documents(
+            {
+                "guild_id": guild_id,
+                "seller_id": seller_id,
+                "kind": "purchase",
+                "status": "open",
+            }
+        )
+
+
+class SellerStore:
+    def __init__(self, db):
+        self.collection = db["sellers"]
+
+    async def ensure_indexes(self):
+        await self.collection.create_index([("guild_id", 1), ("user_id", 1)], unique=True)
+
+    async def upsert(self, guild_id: int, user_id: int, user_name: str):
+        now = _now()
+        await self.collection.update_one(
+            {"_id": keyed(guild_id, user_id)},
+            {
+                "$set": {"user_name": user_name, "guild_id": guild_id, "user_id": user_id, "updated_at": now},
+                "$setOnInsert": {
+                    "_id": keyed(guild_id, user_id),
+                    "accrued_sell_money": 0,
+                    "accrued_sell_count": 0,
+                    "ticket_disabled": False,
+                    "disabled_reason": "",
+                    "created_at": now,
+                },
+            },
+            upsert=True,
+        )
+
+    async def list_active_options(self, guild_id: int):
+        return await self.collection.find({"guild_id": guild_id}).sort("user_name", 1).to_list(length=25)
+
+    async def get(self, guild_id: int, user_id: int):
+        return await self.collection.find_one({"_id": keyed(guild_id, user_id)})
+
+    async def set_ticket_state(self, guild_id: int, user_id: int, disabled: bool, reason: str = ""):
+        await self.collection.update_one(
+            {"_id": keyed(guild_id, user_id)},
+            {"$set": {"ticket_disabled": disabled, "disabled_reason": reason, "updated_at": _now()}},
+        )
+
+    async def add_sale(self, guild_id: int, user_id: int, amount: int):
+        await self.collection.update_one(
+            {"_id": keyed(guild_id, user_id)},
+            {
+                "$inc": {"accrued_sell_money": amount, "accrued_sell_count": 1},
+                "$set": {"updated_at": _now()},
+            },
+        )
+
+    async def import_legacy_seller(self, guild_id: int, doc: dict):
+        user_id = int(doc["user_id"])
+        await self.collection.update_one(
+            {"_id": keyed(guild_id, user_id)},
+            {
+                "$set": {
+                    "_id": keyed(guild_id, user_id),
+                    "guild_id": guild_id,
+                    "user_id": user_id,
+                    "user_name": doc.get("user_name", str(user_id)),
+                    "accrued_sell_money": int(doc.get("accrue_sell_money", 0) or 0),
+                    "accrued_sell_count": int(doc.get("accrue_sell_number", 0) or 0),
+                    "ticket_disabled": bool(doc.get("ticket_disable", 0)),
+                    "disabled_reason": doc.get("reason") or "",
+                    "updated_at": _now(),
+                },
+                "$setOnInsert": {"created_at": _now()},
+            },
+            upsert=True,
+        )
+
+
+class MiddlemanStore:
+    def __init__(self, db):
+        self.collection = db["middlemen"]
+
+    async def ensure_indexes(self):
+        await self.collection.create_index([("guild_id", 1), ("user_id", 1)], unique=True)
+
+    async def upsert(self, guild_id: int, user_id: int, user_name: str):
+        now = _now()
+        await self.collection.update_one(
+            {"_id": keyed(guild_id, user_id)},
+            {
+                "$set": {"user_name": user_name, "guild_id": guild_id, "user_id": user_id, "updated_at": now},
+                "$setOnInsert": {
+                    "_id": keyed(guild_id, user_id),
+                    "accrued_trade_money": 0,
+                    "accrued_trade_count": 0,
+                    "created_at": now,
+                },
+            },
+            upsert=True,
+        )
+
+    async def get(self, guild_id: int, user_id: int):
+        return await self.collection.find_one({"_id": keyed(guild_id, user_id)})
+
+    async def list_all(self, guild_id: int):
+        return await self.collection.find({"guild_id": guild_id}).sort("user_name", 1).to_list(length=25)
+
+    async def add_trade(self, guild_id: int, user_id: int, amount: int):
+        await self.collection.update_one(
+            {"_id": keyed(guild_id, user_id)},
+            {
+                "$inc": {"accrued_trade_money": amount, "accrued_trade_count": 1},
+                "$set": {"updated_at": _now()},
+            },
+        )
+
+    async def import_legacy_middleman(self, guild_id: int, doc: dict):
+        user_id = int(doc["user_id"])
+        await self.collection.update_one(
+            {"_id": keyed(guild_id, user_id)},
+            {
+                "$set": {
+                    "_id": keyed(guild_id, user_id),
+                    "guild_id": guild_id,
+                    "user_id": user_id,
+                    "user_name": doc.get("user_name", str(user_id)),
+                    "accrued_trade_money": int(doc.get("accrue_trade_money", 0) or 0),
+                    "accrued_trade_count": int(doc.get("accrue_trade_number", 0) or 0),
+                    "updated_at": _now(),
+                },
+                "$setOnInsert": {"created_at": _now()},
+            },
+            upsert=True,
+        )
