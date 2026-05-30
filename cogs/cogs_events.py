@@ -26,6 +26,17 @@ class EventsCog(commands.Cog):
     async def cog_unload(self):
         self.ticket_condition_loop.cancel()
 
+    async def sync_seller_current_tickets(self, guild: discord.Guild):
+        tickets_by_seller: dict[int, list[int]] = {}
+        tickets = await self.repos.tickets.list_open_purchase_tickets(guild.id)
+        for ticket in tickets:
+            seller_id = ticket.get("seller_id")
+            channel_id = ticket.get("channel_id")
+            if not seller_id or not channel_id or guild.get_channel(channel_id) is None:
+                continue
+            tickets_by_seller.setdefault(seller_id, []).append(channel_id)
+        await self.repos.sellers.set_current_tickets(guild.id, tickets_by_seller)
+
     @commands.Cog.listener()
     async def on_member_join(self, member: discord.Member):
         settings = await self.repos.settings.get(member.guild.id)
@@ -46,6 +57,7 @@ class EventsCog(commands.Cog):
     @app_commands.default_permissions(administrator=True)
     async def ticket_condition_panel(self, interaction: discord.Interaction):
         reset_at = int(time.time())
+        await self.sync_seller_current_tickets(interaction.guild)
         embed = await self.build_ticket_condition_embed(interaction.guild, reset_at=reset_at)
         message = await interaction.channel.send(embed=embed)
         await self.repos.settings.set_value(interaction.guild.id, "channels", "ticket_condition", interaction.channel.id)
@@ -65,7 +77,9 @@ class EventsCog(commands.Cog):
                 embed.add_field(name="LAST RESET", value=f"<t:{reset_at}:F> (<t:{reset_at}:R>)", inline=False)
             return embed
         for seller in sellers:
-            opened = await self.repos.tickets.count_open_for_seller(guild.id, seller["user_id"])
+            opened = seller.get("current_ticket_count")
+            if opened is None:
+                opened = len(seller.get("current_ticket_channel_ids", []))
             suffix = " (비활성화)" if seller.get("ticket_disabled") else ""
             embed.add_field(name=f"{seller.get('user_name', seller['user_id'])}{suffix}", value=f"{opened}개", inline=False)
         if reset_at:
@@ -96,6 +110,11 @@ class EventsCog(commands.Cog):
     @ticket_condition_loop.before_loop
     async def before_ticket_condition_loop(self):
         await self.bot.wait_until_ready()
+        for guild in self.bot.guilds:
+            try:
+                await self.sync_seller_current_tickets(guild)
+            except Exception:
+                log.exception("Failed to sync seller current tickets: guild_id=%s", guild.id)
 
 
 async def setup(bot: commands.Bot):

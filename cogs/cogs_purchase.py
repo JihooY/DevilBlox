@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 
 import discord
@@ -8,9 +9,9 @@ from discord.ext import commands, tasks
 
 from utils.embeds import error_embed, info_embed, success_embed
 from utils.panels import restore_panel_message, save_panel_location
-from utils.permissions import allow_ticket_access, deny_ticket_access, move_to_category
+from utils.permissions import deny_ticket_access
 from utils.roles import has_role
-from utils.tickets import safe_channel_name
+from utils.tickets import collect_channel_transcript, safe_channel_name
 
 log = logging.getLogger(__name__)
 
@@ -95,6 +96,29 @@ class PurchaseCog(commands.Cog):
         admin_role = settings["roles"].get("admin")
         return has_role(interaction.user, seller_role) or has_role(interaction.user, admin_role)
 
+    async def refresh_ticket_condition_panel(self, guild: discord.Guild):
+        events_cog = self.bot.get_cog("EventsCog")
+        if events_cog is None or not hasattr(events_cog, "build_ticket_condition_embed"):
+            return
+
+        try:
+            settings = await self.repos.settings.get(guild.id)
+            channel_id = settings["channels"].get("ticket_condition")
+            message_id = settings["meta"].get("ticket_condition_message_id")
+            if not channel_id or not message_id:
+                return
+
+            channel = guild.get_channel(channel_id)
+            if channel is None:
+                return
+
+            message = await channel.fetch_message(message_id)
+            await message.edit(embed=await events_cog.build_ticket_condition_embed(guild))
+        except discord.HTTPException:
+            return
+        except Exception:
+            log.exception("Failed to refresh ticket condition panel: guild_id=%s", guild.id)
+
     async def open_purchase_ticket(self, interaction: discord.Interaction, seller_id: int):
         await interaction.response.defer(ephemeral=True)
         guild = interaction.guild
@@ -139,6 +163,8 @@ class PurchaseCog(commands.Cog):
             channel.id,
             seller_id=seller.id,
         )
+        await self.repos.sellers.add_current_ticket(guild.id, seller.id, channel.id)
+        await self.refresh_ticket_condition_panel(guild)
 
         embed = info_embed("PURCHASE", f"{interaction.user.mention}님이 구매 티켓을 열었습니다.")
         await channel.send(content=f"{interaction.user.mention} {seller.mention}", embed=embed)
@@ -251,8 +277,14 @@ class PurchaseCog(commands.Cog):
         if seller:
             await deny_ticket_access(channel, seller)
 
-        closed_category = interaction.guild.get_channel(settings["categories"].get("purchase_closed") or 0)
-        await move_to_category(channel, closed_category if isinstance(closed_category, discord.CategoryChannel) else None)
+        await channel.send(
+            embed=success_embed(
+                "구매 티켓 종료",
+                f"상품명: {상품명}\n금액: {금액:,}원\n대화 기록을 저장한 뒤 10초 후 채널이 자동 삭제됩니다.",
+            )
+        )
+        transcript = await collect_channel_transcript(channel)
+        await self.repos.tickets.save_transcript(ticket, transcript)
         await self.repos.tickets.close(
             interaction.guild.id,
             channel.id,
@@ -260,6 +292,8 @@ class PurchaseCog(commands.Cog):
             amount=금액,
             closed_by=interaction.user.id,
         )
+        await self.repos.sellers.remove_current_ticket(interaction.guild.id, ticket["seller_id"], channel.id)
+        await self.refresh_ticket_condition_panel(interaction.guild)
 
         if 금액 > 0:
             buyer_doc = await self.repos.users.add_spent(interaction.guild.id, ticket["user_id"], 금액)
@@ -269,17 +303,17 @@ class PurchaseCog(commands.Cog):
                 await self.upgrade_user_grade(interaction.guild, buyer, buyer_doc.get("accrued_spent", 0))
             await self.refresh_purchase_panel(interaction.guild)
 
-        log_channel = interaction.guild.get_channel(settings["channels"].get("purchase_log") or 0)
-        if log_channel:
-            embed = success_embed("PURCHASE LOG")
-            embed.add_field(name="구매자", value=buyer.mention if buyer else str(ticket["user_id"]), inline=False)
-            embed.add_field(name="판매자", value=seller.mention if seller else str(ticket["seller_id"]), inline=False)
-            embed.add_field(name="상품명", value=상품명, inline=True)
-            embed.add_field(name="금액", value=f"{금액:,}원", inline=True)
-            await log_channel.send(embed=embed)
+            log_channel = interaction.guild.get_channel(settings["channels"].get("purchase_log") or 0)
+            if log_channel:
+                buyer_label = buyer.mention if buyer else str(ticket["user_id"])
+                seller_label = seller.mention if seller else str(ticket["seller_id"])
+                embed = info_embed("PURCHASE LOG", f"{buyer_label}님 {상품명} 구매 감사합니다!")
+                embed.add_field(name="판매자", value=seller_label, inline=False)
+                await log_channel.send(embed=embed)
 
-        await channel.send(embed=success_embed("구매 티켓 종료", f"상품명: {상품명}\n금액: {금액:,}원"))
-        await interaction.followup.send(embed=success_embed("구매 티켓 종료 완료"), ephemeral=True)
+        await interaction.followup.send(embed=success_embed("구매 티켓 종료 완료", "10초 후 채널이 삭제됩니다."), ephemeral=True)
+        await asyncio.sleep(10)
+        await channel.delete(reason="DevilBlox purchase ticket closed and transcript saved")
 
     @app_commands.command(name="티켓설정", description="본인 셀러 티켓의 생성 가능 여부를 바꿉니다.")
     @app_commands.choices(상태=[

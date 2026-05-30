@@ -100,6 +100,12 @@ class TicketStore:
             }
         )
 
+    async def list_open_purchase_tickets(self, guild_id: int):
+        return await self.collection.find(
+            {"guild_id": guild_id, "kind": "purchase", "status": "open"},
+            {"seller_id": 1, "channel_id": 1},
+        ).to_list(length=None)
+
 
 class SellerStore:
     def __init__(self, db):
@@ -118,6 +124,8 @@ class SellerStore:
                     "_id": keyed(guild_id, user_id),
                     "accrued_sell_money": 0,
                     "accrued_sell_count": 0,
+                    "current_ticket_channel_ids": [],
+                    "current_ticket_count": 0,
                     "ticket_disabled": False,
                     "disabled_reason": "",
                     "created_at": now,
@@ -137,6 +145,66 @@ class SellerStore:
             {"_id": keyed(guild_id, user_id)},
             {"$set": {"ticket_disabled": disabled, "disabled_reason": reason, "updated_at": _now()}},
         )
+
+    async def _refresh_current_ticket_count(self, guild_id: int, user_id: int):
+        doc = await self.collection.find_one(
+            {"_id": keyed(guild_id, user_id)},
+            {"current_ticket_channel_ids": 1},
+        )
+        channel_ids = (doc.get("current_ticket_channel_ids") or []) if doc else []
+        await self.collection.update_one(
+            {"_id": keyed(guild_id, user_id)},
+            {"$set": {"current_ticket_count": len(channel_ids), "updated_at": _now()}},
+        )
+
+    async def add_current_ticket(self, guild_id: int, user_id: int, channel_id: int):
+        now = _now()
+        await self.collection.update_one(
+            {"_id": keyed(guild_id, user_id)},
+            {
+                "$set": {"guild_id": guild_id, "user_id": user_id, "updated_at": now},
+                "$setOnInsert": {
+                    "_id": keyed(guild_id, user_id),
+                    "user_name": str(user_id),
+                    "accrued_sell_money": 0,
+                    "accrued_sell_count": 0,
+                    "current_ticket_count": 0,
+                    "ticket_disabled": False,
+                    "disabled_reason": "",
+                    "created_at": now,
+                },
+                "$addToSet": {"current_ticket_channel_ids": channel_id},
+            },
+            upsert=True,
+        )
+        await self._refresh_current_ticket_count(guild_id, user_id)
+
+    async def remove_current_ticket(self, guild_id: int, user_id: int, channel_id: int):
+        await self.collection.update_one(
+            {"_id": keyed(guild_id, user_id)},
+            {
+                "$pull": {"current_ticket_channel_ids": channel_id},
+                "$set": {"updated_at": _now()},
+            },
+        )
+        await self._refresh_current_ticket_count(guild_id, user_id)
+
+    async def set_current_tickets(self, guild_id: int, tickets_by_seller: dict[int, list[int]]):
+        sellers = await self.collection.find({"guild_id": guild_id}, {"user_id": 1}).to_list(length=None)
+        now = _now()
+        for seller in sellers:
+            user_id = seller["user_id"]
+            channel_ids = list(dict.fromkeys(tickets_by_seller.get(user_id, [])))
+            await self.collection.update_one(
+                {"_id": keyed(guild_id, user_id)},
+                {
+                    "$set": {
+                        "current_ticket_channel_ids": channel_ids,
+                        "current_ticket_count": len(channel_ids),
+                        "updated_at": now,
+                    }
+                },
+            )
 
     async def add_sale(self, guild_id: int, user_id: int, amount: int):
         await self.collection.update_one(
@@ -159,6 +227,8 @@ class SellerStore:
                     "user_name": doc.get("user_name", str(user_id)),
                     "accrued_sell_money": int(doc.get("accrue_sell_money", 0) or 0),
                     "accrued_sell_count": int(doc.get("accrue_sell_number", 0) or 0),
+                    "current_ticket_channel_ids": doc.get("current_ticket_channel_ids", []),
+                    "current_ticket_count": int(doc.get("current_ticket_count", 0) or 0),
                     "ticket_disabled": bool(doc.get("ticket_disable", 0)),
                     "disabled_reason": doc.get("reason") or "",
                     "updated_at": _now(),
