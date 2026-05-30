@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
 import logging
 import time
 
@@ -28,14 +29,38 @@ class EventsCog(commands.Cog):
 
     async def sync_seller_current_tickets(self, guild: discord.Guild):
         tickets_by_seller: dict[int, list[int]] = {}
-        tickets = await self.repos.tickets.list_open_purchase_tickets(guild.id)
+        if hasattr(self.repos.tickets, "list_open_purchase_tickets"):
+            tickets = await self.repos.tickets.list_open_purchase_tickets(guild.id)
+        else:
+            tickets = await self.repos.tickets.collection.find(
+                {"guild_id": guild.id, "kind": "purchase", "status": "open"},
+                {"seller_id": 1, "channel_id": 1},
+            ).to_list(length=None)
         for ticket in tickets:
             seller_id = ticket.get("seller_id")
             channel_id = ticket.get("channel_id")
             if not seller_id or not channel_id or guild.get_channel(channel_id) is None:
                 continue
             tickets_by_seller.setdefault(seller_id, []).append(channel_id)
-        await self.repos.sellers.set_current_tickets(guild.id, tickets_by_seller)
+        if hasattr(self.repos.sellers, "set_current_tickets"):
+            await self.repos.sellers.set_current_tickets(guild.id, tickets_by_seller)
+            return
+
+        sellers = await self.repos.sellers.collection.find({"guild_id": guild.id}, {"user_id": 1}).to_list(length=None)
+        now = datetime.now(timezone.utc)
+        for seller in sellers:
+            user_id = seller["user_id"]
+            channel_ids = list(dict.fromkeys(tickets_by_seller.get(user_id, [])))
+            await self.repos.sellers.collection.update_one(
+                {"_id": f"{guild.id}:{user_id}"},
+                {
+                    "$set": {
+                        "current_ticket_channel_ids": channel_ids,
+                        "current_ticket_count": len(channel_ids),
+                        "updated_at": now,
+                    }
+                },
+            )
 
     @commands.Cog.listener()
     async def on_member_join(self, member: discord.Member):

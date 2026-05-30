@@ -35,6 +35,15 @@ class SettingsCog(commands.Cog):
             ephemeral=True,
         )
 
+    @app_commands.command(name="셀러역할설정", description="셀러 권한으로 인정할 역할을 설정합니다.")
+    @app_commands.default_permissions(administrator=True)
+    async def set_seller_role(self, interaction: discord.Interaction, 역할: discord.Role):
+        await self.settings.set_value(interaction.guild.id, "roles", "seller", 역할.id)
+        await interaction.response.send_message(
+            embed=success_embed("셀러 역할 설정 완료", 역할.mention),
+            ephemeral=True,
+        )
+
     @app_commands.command(name="채널설정", description="봇에서 사용할 채널을 설정합니다.")
     @app_commands.default_permissions(administrator=True)
     @app_commands.choices(종류=CHANNEL_CHOICES)

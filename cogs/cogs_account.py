@@ -125,7 +125,8 @@ class AccountCog(commands.Cog):
         )
         await interaction.response.send_message(embed=success_embed("계정 패널 생성 완료"), ephemeral=True)
 
-    @app_commands.command(name="유저정보", description="특정 유저의 계정 정보를 조회합니다.")
+    @app_commands.command(name="유저정보조회", description="특정 유저의 계정 정보를 조회합니다.")
+    @app_commands.default_permissions(send_messages=True)
     async def user_info(self, interaction: discord.Interaction, 유저: discord.Member):
         await interaction.response.defer(ephemeral=True)
         if not await self._staff_allowed(interaction):

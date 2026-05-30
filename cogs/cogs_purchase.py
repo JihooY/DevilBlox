@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from datetime import datetime, timezone
 
 import discord
 from discord import app_commands
@@ -119,6 +120,57 @@ class PurchaseCog(commands.Cog):
         except Exception:
             log.exception("Failed to refresh ticket condition panel: guild_id=%s", guild.id)
 
+    async def _refresh_seller_current_ticket_count(self, guild_id: int, seller_id: int):
+        doc = await self.repos.sellers.collection.find_one(
+            {"_id": f"{guild_id}:{seller_id}"},
+            {"current_ticket_channel_ids": 1},
+        )
+        channel_ids = (doc.get("current_ticket_channel_ids") or []) if doc else []
+        await self.repos.sellers.collection.update_one(
+            {"_id": f"{guild_id}:{seller_id}"},
+            {"$set": {"current_ticket_count": len(channel_ids), "updated_at": datetime.now(timezone.utc)}},
+        )
+
+    async def add_seller_current_ticket(self, guild_id: int, seller_id: int, channel_id: int):
+        if hasattr(self.repos.sellers, "add_current_ticket"):
+            await self.repos.sellers.add_current_ticket(guild_id, seller_id, channel_id)
+            return
+
+        now = datetime.now(timezone.utc)
+        await self.repos.sellers.collection.update_one(
+            {"_id": f"{guild_id}:{seller_id}"},
+            {
+                "$set": {"guild_id": guild_id, "user_id": seller_id, "updated_at": now},
+                "$setOnInsert": {
+                    "_id": f"{guild_id}:{seller_id}",
+                    "user_name": str(seller_id),
+                    "accrued_sell_money": 0,
+                    "accrued_sell_count": 0,
+                    "current_ticket_count": 0,
+                    "ticket_disabled": False,
+                    "disabled_reason": "",
+                    "created_at": now,
+                },
+                "$addToSet": {"current_ticket_channel_ids": channel_id},
+            },
+            upsert=True,
+        )
+        await self._refresh_seller_current_ticket_count(guild_id, seller_id)
+
+    async def remove_seller_current_ticket(self, guild_id: int, seller_id: int, channel_id: int):
+        if hasattr(self.repos.sellers, "remove_current_ticket"):
+            await self.repos.sellers.remove_current_ticket(guild_id, seller_id, channel_id)
+            return
+
+        await self.repos.sellers.collection.update_one(
+            {"_id": f"{guild_id}:{seller_id}"},
+            {
+                "$pull": {"current_ticket_channel_ids": channel_id},
+                "$set": {"updated_at": datetime.now(timezone.utc)},
+            },
+        )
+        await self._refresh_seller_current_ticket_count(guild_id, seller_id)
+
     async def open_purchase_ticket(self, interaction: discord.Interaction, seller_id: int):
         await interaction.response.defer(ephemeral=True)
         guild = interaction.guild
@@ -163,7 +215,7 @@ class PurchaseCog(commands.Cog):
             channel.id,
             seller_id=seller.id,
         )
-        await self.repos.sellers.add_current_ticket(guild.id, seller.id, channel.id)
+        await self.add_seller_current_ticket(guild.id, seller.id, channel.id)
         await self.refresh_ticket_condition_panel(guild)
 
         embed = info_embed("PURCHASE", f"{interaction.user.mention}님이 구매 티켓을 열었습니다.")
@@ -253,6 +305,7 @@ class PurchaseCog(commands.Cog):
         await interaction.response.send_message(embed=success_embed("구매 패널 생성 완료"), ephemeral=True)
 
     @app_commands.command(name="구매티켓종료", description="현재 구매 티켓을 종료하고 판매 기록을 저장합니다.")
+    @app_commands.default_permissions(send_messages=True)
     async def close_purchase_ticket(self, interaction: discord.Interaction, 상품명: str, 금액: int):
         await interaction.response.defer(ephemeral=True)
         if not await self._seller_allowed(interaction):
@@ -292,7 +345,7 @@ class PurchaseCog(commands.Cog):
             amount=금액,
             closed_by=interaction.user.id,
         )
-        await self.repos.sellers.remove_current_ticket(interaction.guild.id, ticket["seller_id"], channel.id)
+        await self.remove_seller_current_ticket(interaction.guild.id, ticket["seller_id"], channel.id)
         await self.refresh_ticket_condition_panel(interaction.guild)
 
         if 금액 > 0:
@@ -316,6 +369,7 @@ class PurchaseCog(commands.Cog):
         await channel.delete(reason="DevilBlox purchase ticket closed and transcript saved")
 
     @app_commands.command(name="티켓설정", description="본인 셀러 티켓의 생성 가능 여부를 바꿉니다.")
+    @app_commands.default_permissions(send_messages=True)
     @app_commands.choices(상태=[
         app_commands.Choice(name="켜기", value="on"),
         app_commands.Choice(name="끄기", value="off"),
