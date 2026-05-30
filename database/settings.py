@@ -71,6 +71,12 @@ LEGACY_SETTING_MAP = {
     "mm_category": ("categories", "middleman"),
     "mm_closed_category": ("categories", "middleman_closed"),
     "ticket_condition_msg": ("meta", "ticket_condition_message_id"),
+    "account_panel_msg": ("meta", "account_panel_message_id"),
+    "alarm_panel_msg": ("meta", "alarm_panel_message_id"),
+    "middleman_panel_msg": ("meta", "middleman_panel_message_id"),
+    "purchase_panel_msg": ("meta", "purchase_panel_message_id"),
+    "support_panel_msg": ("meta", "support_panel_message_id"),
+    "verify_panel_msg": ("meta", "verify_panel_message_id"),
 }
 
 
@@ -85,7 +91,16 @@ def default_settings(guild_id: int) -> dict:
         "roles": {key: None for key in ROLE_KEYS},
         "channels": {key: None for key in CHANNEL_KEYS},
         "categories": {key: None for key in CATEGORY_KEYS},
-        "meta": {"ticket_condition_message_id": None, "ticket_condition_reset_at": None},
+        "meta": {
+            "ticket_condition_message_id": None,
+            "ticket_condition_reset_at": None,
+            "account_panel_message_id": None,
+            "alarm_panel_message_id": None,
+            "middleman_panel_message_id": None,
+            "purchase_panel_message_id": None,
+            "support_panel_message_id": None,
+            "verify_panel_message_id": None,
+        },
         "created_at": _now(),
         "updated_at": _now(),
     }

@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import discord
 from discord import app_commands
-from discord.ext import commands
+from discord.ext import commands, tasks
 
 from utils.embeds import error_embed, info_embed, success_embed
+from utils.panels import restore_panel_message, save_panel_location
 from utils.permissions import deny_ticket_access, move_to_category
 from utils.roles import has_role
 from utils.tickets import safe_channel_name
@@ -159,9 +160,34 @@ class MiddlemanCog(commands.Cog):
         self.bot = bot
         self.bot.add_view(MiddlemanPanelView(self))
 
+    async def cog_load(self):
+        self.restore_middleman_panel_loop.start()
+
+    async def cog_unload(self):
+        self.restore_middleman_panel_loop.cancel()
+
     @property
     def repos(self):
         return self.bot.repos
+
+    async def refresh_middleman_panel(self, guild: discord.Guild):
+        await restore_panel_message(
+            self.repos,
+            guild,
+            "middleman",
+            "middleman_panel_message_id",
+            embed=info_embed("MIDDLEMAN SERVICE", "중개 시작 또는 중개자 정보를 확인할 수 있습니다."),
+            view=MiddlemanPanelView(self),
+        )
+
+    @tasks.loop(seconds=1, count=1)
+    async def restore_middleman_panel_loop(self):
+        for guild in self.bot.guilds:
+            await self.refresh_middleman_panel(guild)
+
+    @restore_middleman_panel_loop.before_loop
+    async def before_restore_middleman_panel_loop(self):
+        await self.bot.wait_until_ready()
 
     async def _middleman_allowed(self, interaction: discord.Interaction) -> bool:
         settings = await self.repos.settings.get(interaction.guild.id)
@@ -223,9 +249,17 @@ class MiddlemanCog(commands.Cog):
     @app_commands.command(name="중개패널", description="현재 채널에 중개 패널을 생성합니다.")
     @app_commands.default_permissions(administrator=True)
     async def middleman_panel(self, interaction: discord.Interaction):
-        await interaction.channel.send(
+        message = await interaction.channel.send(
             embed=info_embed("MIDDLEMAN SERVICE", "중개 시작 또는 중개자 정보를 확인할 수 있습니다."),
             view=MiddlemanPanelView(self),
+        )
+        await save_panel_location(
+            self.repos,
+            interaction.guild.id,
+            "middleman",
+            "middleman_panel_message_id",
+            interaction.channel.id,
+            message.id,
         )
         await interaction.response.send_message(embed=success_embed("중개 패널 생성 완료"), ephemeral=True)
 

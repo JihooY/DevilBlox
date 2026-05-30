@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import discord
 from discord import app_commands
-from discord.ext import commands
+from discord.ext import commands, tasks
 
 from utils.embeds import error_embed, info_embed, success_embed
+from utils.panels import restore_panel_message, save_panel_location
 from utils.roles import has_role
 
 
@@ -56,6 +57,12 @@ class AccountCog(commands.Cog):
         self.bot = bot
         self.bot.add_view(AccountView(self))
 
+    async def cog_load(self):
+        self.restore_account_panel_loop.start()
+
+    async def cog_unload(self):
+        self.restore_account_panel_loop.cancel()
+
     @property
     def repos(self):
         return self.bot.repos
@@ -82,12 +89,39 @@ class AccountCog(commands.Cog):
         )
         return embed
 
+    async def refresh_account_panel(self, guild: discord.Guild):
+        await restore_panel_message(
+            self.repos,
+            guild,
+            "account",
+            "account_panel_message_id",
+            embed=info_embed("ACCOUNT INFO", "계정 정보와 보유 쿠폰을 확인할 수 있습니다."),
+            view=AccountView(self),
+        )
+
+    @tasks.loop(seconds=1, count=1)
+    async def restore_account_panel_loop(self):
+        for guild in self.bot.guilds:
+            await self.refresh_account_panel(guild)
+
+    @restore_account_panel_loop.before_loop
+    async def before_restore_account_panel_loop(self):
+        await self.bot.wait_until_ready()
+
     @app_commands.command(name="계정패널", description="현재 채널에 계정 정보 패널을 생성합니다.")
     @app_commands.default_permissions(administrator=True)
     async def account_panel(self, interaction: discord.Interaction):
-        await interaction.channel.send(
+        message = await interaction.channel.send(
             embed=info_embed("ACCOUNT INFO", "계정 정보와 보유 쿠폰을 확인할 수 있습니다."),
             view=AccountView(self),
+        )
+        await save_panel_location(
+            self.repos,
+            interaction.guild.id,
+            "account",
+            "account_panel_message_id",
+            interaction.channel.id,
+            message.id,
         )
         await interaction.response.send_message(embed=success_embed("계정 패널 생성 완료"), ephemeral=True)
 

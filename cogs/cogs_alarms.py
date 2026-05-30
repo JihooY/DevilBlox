@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import discord
 from discord import app_commands
-from discord.ext import commands
+from discord.ext import commands, tasks
 
 from utils.embeds import error_embed, info_embed, success_embed
+from utils.panels import restore_panel_message, save_panel_location
 
 
 class AlarmView(discord.ui.View):
@@ -47,16 +48,49 @@ class AlarmCog(commands.Cog):
         self.bot = bot
         self.bot.add_view(AlarmView(self))
 
+    async def cog_load(self):
+        self.restore_alarm_panel_loop.start()
+
+    async def cog_unload(self):
+        self.restore_alarm_panel_loop.cancel()
+
     @property
     def repos(self):
         return self.bot.repos
 
+    async def refresh_alarm_panel(self, guild: discord.Guild):
+        await restore_panel_message(
+            self.repos,
+            guild,
+            "alarm",
+            "alarm_panel_message_id",
+            embed=info_embed("ALARM SETTING", "받고 싶은 알림 역할을 켜거나 끌 수 있습니다."),
+            view=AlarmView(self),
+        )
+
+    @tasks.loop(seconds=1, count=1)
+    async def restore_alarm_panel_loop(self):
+        for guild in self.bot.guilds:
+            await self.refresh_alarm_panel(guild)
+
+    @restore_alarm_panel_loop.before_loop
+    async def before_restore_alarm_panel_loop(self):
+        await self.bot.wait_until_ready()
+
     @app_commands.command(name="알림패널", description="현재 채널에 알림 설정 패널을 생성합니다.")
     @app_commands.default_permissions(administrator=True)
     async def alarm_panel(self, interaction: discord.Interaction):
-        await interaction.channel.send(
+        message = await interaction.channel.send(
             embed=info_embed("ALARM SETTING", "받고 싶은 알림 역할을 켜거나 끌 수 있습니다."),
             view=AlarmView(self),
+        )
+        await save_panel_location(
+            self.repos,
+            interaction.guild.id,
+            "alarm",
+            "alarm_panel_message_id",
+            interaction.channel.id,
+            message.id,
         )
         await interaction.response.send_message(embed=success_embed("알림 패널 생성 완료"), ephemeral=True)
 

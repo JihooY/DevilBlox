@@ -1,13 +1,18 @@
 from __future__ import annotations
 
+import logging
+
 import discord
 from discord import app_commands
-from discord.ext import commands
+from discord.ext import commands, tasks
 
 from utils.embeds import error_embed, info_embed, success_embed
+from utils.panels import restore_panel_message, save_panel_location
 from utils.permissions import allow_ticket_access, deny_ticket_access, move_to_category
 from utils.roles import has_role
 from utils.tickets import safe_channel_name
+
+log = logging.getLogger(__name__)
 
 GRADE_THRESHOLDS = (
     (200_000, "svip"),
@@ -44,15 +49,22 @@ class PurchaseSelect(discord.ui.Select):
                     description=description[:100],
                 )
             )
+        disabled = not options
+        if not options:
+            options.append(discord.SelectOption(label="등록된 셀러가 없습니다.", value="none"))
         super().__init__(
             placeholder="구매할 셀러를 선택하세요.",
             options=options,
             custom_id="devilblox:purchase:select",
             min_values=1,
             max_values=1,
+            disabled=disabled,
         )
 
     async def callback(self, interaction: discord.Interaction):
+        if self.values[0] == "none":
+            await interaction.response.send_message(embed=error_embed("셀러 없음", "등록된 셀러가 없습니다."), ephemeral=True)
+            return
         await self.cog.open_purchase_ticket(interaction, int(self.values[0]))
 
 
@@ -65,6 +77,13 @@ class PurchasePanelView(discord.ui.View):
 class PurchaseCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
+        self.bot.add_view(PurchasePanelView(self, []))
+
+    async def cog_load(self):
+        self.purchase_panel_loop.start()
+
+    async def cog_unload(self):
+        self.purchase_panel_loop.cancel()
 
     @property
     def repos(self):
@@ -140,6 +159,40 @@ class PurchaseCog(commands.Cog):
                 await self.repos.users.set_grade(guild.id, member.id, role.id)
             return
 
+    async def refresh_purchase_panel(self, guild: discord.Guild):
+        try:
+            settings = await self.repos.settings.get(guild.id)
+            channel_id = settings["channels"].get("purchase")
+            message_id = settings["meta"].get("purchase_panel_message_id")
+            if not channel_id or not message_id:
+                return
+
+            channel = guild.get_channel(channel_id)
+            if channel is None:
+                return
+
+            sellers = await self.repos.sellers.list_active_options(guild.id)
+            embed = info_embed("PURCHASE", "원하는 셀러를 선택하면 개인 구매 티켓이 열립니다.")
+            await restore_panel_message(
+                self.repos,
+                guild,
+                "purchase",
+                "purchase_panel_message_id",
+                embed=embed,
+                view=PurchasePanelView(self, sellers),
+            )
+        except Exception:
+            log.exception("Failed to refresh purchase panel: guild_id=%s", guild.id)
+
+    @tasks.loop(minutes=1)
+    async def purchase_panel_loop(self):
+        for guild in self.bot.guilds:
+            await self.refresh_purchase_panel(guild)
+
+    @purchase_panel_loop.before_loop
+    async def before_purchase_panel_loop(self):
+        await self.bot.wait_until_ready()
+
     @app_commands.command(name="셀러등록", description="구매 패널에 표시할 셀러를 등록합니다.")
     @app_commands.default_permissions(administrator=True)
     async def register_seller(self, interaction: discord.Interaction, 셀러: discord.Member):
@@ -148,6 +201,7 @@ class PurchaseCog(commands.Cog):
             embed=success_embed("셀러 등록 완료", f"{셀러.mention}"),
             ephemeral=True,
         )
+        await self.refresh_purchase_panel(interaction.guild)
 
     @app_commands.command(name="구매패널", description="현재 채널에 구매 패널을 생성합니다.")
     @app_commands.default_permissions(administrator=True)
@@ -161,7 +215,15 @@ class PurchaseCog(commands.Cog):
             return
 
         embed = info_embed("PURCHASE", "원하는 셀러를 선택하면 개인 구매 티켓이 열립니다.")
-        await interaction.channel.send(embed=embed, view=PurchasePanelView(self, sellers))
+        message = await interaction.channel.send(embed=embed, view=PurchasePanelView(self, sellers))
+        await save_panel_location(
+            self.repos,
+            interaction.guild.id,
+            "purchase",
+            "purchase_panel_message_id",
+            interaction.channel.id,
+            message.id,
+        )
         await interaction.response.send_message(embed=success_embed("구매 패널 생성 완료"), ephemeral=True)
 
     @app_commands.command(name="구매티켓종료", description="현재 구매 티켓을 종료하고 판매 기록을 저장합니다.")
@@ -205,6 +267,7 @@ class PurchaseCog(commands.Cog):
             await self.repos.sellers.add_sale(interaction.guild.id, ticket["seller_id"], 금액)
             if buyer:
                 await self.upgrade_user_grade(interaction.guild, buyer, buyer_doc.get("accrued_spent", 0))
+            await self.refresh_purchase_panel(interaction.guild)
 
         log_channel = interaction.guild.get_channel(settings["channels"].get("purchase_log") or 0)
         if log_channel:
@@ -236,6 +299,7 @@ class PurchaseCog(commands.Cog):
         await self.repos.sellers.upsert(interaction.guild.id, interaction.user.id, interaction.user.display_name)
         disabled = 상태.value == "off"
         await self.repos.sellers.set_ticket_state(interaction.guild.id, interaction.user.id, disabled, 사유)
+        await self.refresh_purchase_panel(interaction.guild)
         await interaction.followup.send(
             embed=success_embed("티켓 상태 변경", "비활성화" if disabled else "활성화"),
             ephemeral=True,

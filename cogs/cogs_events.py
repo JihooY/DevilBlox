@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import time
 
 import discord
@@ -7,6 +8,8 @@ from discord import app_commands
 from discord.ext import commands, tasks
 
 from utils.embeds import info_embed, success_embed
+
+log = logging.getLogger(__name__)
 
 
 class EventsCog(commands.Cog):
@@ -72,23 +75,23 @@ class EventsCog(commands.Cog):
     @tasks.loop(minutes=1)
     async def ticket_condition_loop(self):
         for guild in self.bot.guilds:
-            settings = await self.repos.settings.get(guild.id)
-            channel_id = settings["channels"].get("ticket_condition")
-            message_id = settings["meta"].get("ticket_condition_message_id")
-            if not channel_id or not message_id:
-                continue
-            channel = guild.get_channel(channel_id)
-            if channel is None:
-                continue
             try:
+                settings = await self.repos.settings.get(guild.id)
+                channel_id = settings["channels"].get("ticket_condition")
+                message_id = settings["meta"].get("ticket_condition_message_id")
+                if not channel_id or not message_id:
+                    continue
+                channel = guild.get_channel(channel_id)
+                if channel is None:
+                    continue
                 message = await channel.fetch_message(message_id)
-                reset_at = settings["meta"].get("ticket_condition_reset_at")
-                if reset_at is None:
-                    reset_at = int(message.created_at.timestamp())
-                    await self.repos.settings.set_value(guild.id, "meta", "ticket_condition_reset_at", reset_at)
+                reset_at = int(time.time())
+                await self.repos.settings.set_value(guild.id, "meta", "ticket_condition_reset_at", reset_at)
                 await message.edit(embed=await self.build_ticket_condition_embed(guild, reset_at=reset_at))
             except discord.HTTPException:
                 continue
+            except Exception:
+                log.exception("Failed to refresh ticket condition panel: guild_id=%s", guild.id)
 
     @ticket_condition_loop.before_loop
     async def before_ticket_condition_loop(self):

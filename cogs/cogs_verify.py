@@ -5,10 +5,11 @@ import time
 
 import discord
 from discord import app_commands
-from discord.ext import commands
+from discord.ext import commands, tasks
 
 from utils.assets import asset_path, has_asset
 from utils.embeds import COLOR_DARK, error_embed, success_embed
+from utils.panels import restore_panel_message, save_panel_location
 from utils.roles import has_role
 
 VERIFY_TIMEOUT = 120
@@ -211,6 +212,16 @@ class VerificationCog(commands.Cog):
         self.bot = bot
         self.bot.add_view(VerifyStartView(self))
 
+    async def cog_load(self):
+        self.restore_verify_panel_loop.start()
+
+    async def cog_unload(self):
+        self.restore_verify_panel_loop.cancel()
+
+    @property
+    def repos(self):
+        return self.bot.repos
+
     @property
     def settings(self):
         return self.bot.repos.settings
@@ -218,6 +229,24 @@ class VerificationCog(commands.Cog):
     @property
     def users(self):
         return self.bot.repos.users
+
+    async def refresh_verify_panel(self, guild: discord.Guild):
+        await restore_panel_message(
+            self.repos,
+            guild,
+            "verify",
+            "verify_panel_message_id",
+            view=VerifyStartView(self),
+        )
+
+    @tasks.loop(seconds=1, count=1)
+    async def restore_verify_panel_loop(self):
+        for guild in self.bot.guilds:
+            await self.refresh_verify_panel(guild)
+
+    @restore_verify_panel_loop.before_loop
+    async def before_restore_verify_panel_loop(self):
+        await self.bot.wait_until_ready()
 
     async def send_verify_log(self, interaction: discord.Interaction, role: discord.Role):
         settings = await self.settings.get(interaction.guild.id)
@@ -251,7 +280,15 @@ class VerificationCog(commands.Cog):
             file = discord.File(str(asset_path("banners", "verify_panel.gif")), filename="verify_panel.gif")
             embed.set_image(url="attachment://verify_panel.gif")
 
-        await interaction.channel.send(embed=embed, file=file, view=VerifyStartView(self))
+        message = await interaction.channel.send(embed=embed, file=file, view=VerifyStartView(self))
+        await save_panel_location(
+            self.repos,
+            interaction.guild.id,
+            "verify",
+            "verify_panel_message_id",
+            interaction.channel.id,
+            message.id,
+        )
         await interaction.response.send_message(embed=success_embed("인증 패널 생성 완료"), ephemeral=True)
 
 
