@@ -14,11 +14,14 @@ def keyed(guild_id: int, user_id: int) -> str:
 class TicketStore:
     def __init__(self, db):
         self.collection = db["tickets"]
+        self.transcripts = db["ticket_transcripts"]
 
     async def ensure_indexes(self):
         await self.collection.create_index([("guild_id", 1), ("channel_id", 1)], unique=True)
         await self.collection.create_index([("guild_id", 1), ("user_id", 1), ("kind", 1), ("status", 1)])
         await self.collection.create_index([("guild_id", 1), ("seller_id", 1), ("kind", 1), ("status", 1)])
+        await self.transcripts.create_index([("guild_id", 1), ("channel_id", 1), ("message_id", 1)], unique=True)
+        await self.transcripts.create_index([("guild_id", 1), ("ticket_id", 1), ("created_at", 1)])
 
     async def create(self, guild_id: int, kind: str, user_id: int, channel_id: int, **extra):
         doc = {
@@ -51,6 +54,40 @@ class TicketStore:
         await self.collection.update_one(
             {"guild_id": guild_id, "channel_id": channel_id},
             {"$set": update},
+        )
+
+    async def save_transcript(self, ticket: dict, messages: list[dict]):
+        now = _now()
+        guild_id = ticket["guild_id"]
+        channel_id = ticket["channel_id"]
+        ticket_id = ticket["_id"]
+        await self.transcripts.delete_many({"guild_id": guild_id, "channel_id": channel_id})
+        if messages:
+            docs = [
+                {
+                    "_id": f"{guild_id}:{channel_id}:{message['message_id']}",
+                    "guild_id": guild_id,
+                    "channel_id": channel_id,
+                    "ticket_id": ticket_id,
+                    "kind": ticket.get("kind"),
+                    "ticket_user_id": ticket.get("user_id"),
+                    "saved_at": now,
+                    **message,
+                }
+                for message in messages
+            ]
+            for start in range(0, len(docs), 500):
+                await self.transcripts.insert_many(docs[start : start + 500])
+
+        await self.collection.update_one(
+            {"_id": ticket_id},
+            {
+                "$set": {
+                    "transcript_saved_at": now,
+                    "transcript_message_count": len(messages),
+                    "updated_at": now,
+                }
+            },
         )
 
     async def count_open_for_seller(self, guild_id: int, seller_id: int) -> int:

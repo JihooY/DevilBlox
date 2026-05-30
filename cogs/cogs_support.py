@@ -1,12 +1,14 @@
 from __future__ import annotations
 
+import asyncio
+
 import discord
 from discord import app_commands
 from discord.ext import commands, tasks
 
 from utils.embeds import error_embed, info_embed, success_embed
 from utils.panels import restore_panel_message, save_panel_location
-from utils.permissions import allow_ticket_access, deny_ticket_access, move_to_category
+from utils.permissions import allow_ticket_access, deny_ticket_access
 from utils.roles import has_role
 from utils.tickets import safe_channel_name
 
@@ -62,6 +64,59 @@ class SupportCog(commands.Cog):
     async def _admin_allowed(self, interaction: discord.Interaction) -> bool:
         settings = await self.repos.settings.get(interaction.guild.id)
         return has_role(interaction.user, settings["roles"].get("admin"))
+
+    async def _collect_transcript(self, channel: discord.TextChannel) -> list[dict]:
+        messages = []
+        async for message in channel.history(limit=None, oldest_first=True):
+            messages.append(
+                {
+                    "message_id": message.id,
+                    "created_at": message.created_at,
+                    "edited_at": message.edited_at,
+                    "jump_url": message.jump_url,
+                    "type": str(message.type),
+                    "pinned": message.pinned,
+                    "tts": message.tts,
+                    "content": message.content,
+                    "clean_content": message.clean_content,
+                    "author": {
+                        "id": message.author.id,
+                        "name": str(message.author),
+                        "display_name": getattr(message.author, "display_name", message.author.name),
+                        "bot": message.author.bot,
+                    },
+                    "mentions": [user.id for user in message.mentions],
+                    "role_mentions": [role.id for role in message.role_mentions],
+                    "attachments": [
+                        {
+                            "id": attachment.id,
+                            "filename": attachment.filename,
+                            "url": attachment.url,
+                            "proxy_url": attachment.proxy_url,
+                            "content_type": attachment.content_type,
+                            "size": attachment.size,
+                        }
+                        for attachment in message.attachments
+                    ],
+                    "embeds": [embed.to_dict() for embed in message.embeds],
+                    "stickers": [
+                        {
+                            "id": sticker.id,
+                            "name": sticker.name,
+                            "format": str(sticker.format),
+                        }
+                        for sticker in message.stickers
+                    ],
+                    "reference": {
+                        "message_id": message.reference.message_id,
+                        "channel_id": message.reference.channel_id,
+                        "guild_id": message.reference.guild_id,
+                    }
+                    if message.reference
+                    else None,
+                }
+            )
+        return messages
 
     async def open_support_ticket(self, interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True)
@@ -131,12 +186,13 @@ class SupportCog(commands.Cog):
         member = interaction.guild.get_member(ticket["user_id"])
         if member:
             await deny_ticket_access(interaction.channel, member)
-        settings = await self.repos.settings.get(interaction.guild.id)
-        closed = interaction.guild.get_channel(settings["categories"].get("support_closed") or 0)
-        await move_to_category(interaction.channel, closed if isinstance(closed, discord.CategoryChannel) else None)
+        await interaction.channel.send(embed=success_embed("문의 종료", "대화 기록을 저장한 뒤 10초 후 채널이 자동 삭제됩니다."))
+        transcript = await self._collect_transcript(interaction.channel)
+        await self.repos.tickets.save_transcript(ticket, transcript)
         await self.repos.tickets.close(interaction.guild.id, interaction.channel_id, closed_by=interaction.user.id)
-        await interaction.channel.send(embed=success_embed("문의 종료"))
-        await interaction.followup.send(embed=success_embed("문의 티켓 종료 완료"), ephemeral=True)
+        await interaction.followup.send(embed=success_embed("문의 티켓 종료 완료", "10초 후 채널이 삭제됩니다."), ephemeral=True)
+        await asyncio.sleep(10)
+        await interaction.channel.delete(reason="DevilBlox support ticket closed and transcript saved")
 
     @app_commands.command(name="유저추가", description="현재 티켓 채널에 유저를 추가합니다.")
     async def add_user(self, interaction: discord.Interaction, 유저: discord.Member):
