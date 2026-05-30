@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import time
+
 import discord
 from discord import app_commands
 from discord.ext import commands, tasks
@@ -40,22 +42,31 @@ class EventsCog(commands.Cog):
     @app_commands.command(name="티켓현황패널", description="현재 채널에 티켓 현황 메시지를 생성하고 자동 갱신 대상으로 설정합니다.")
     @app_commands.default_permissions(administrator=True)
     async def ticket_condition_panel(self, interaction: discord.Interaction):
-        embed = await self.build_ticket_condition_embed(interaction.guild)
+        reset_at = int(time.time())
+        embed = await self.build_ticket_condition_embed(interaction.guild, reset_at=reset_at)
         message = await interaction.channel.send(embed=embed)
         await self.repos.settings.set_value(interaction.guild.id, "channels", "ticket_condition", interaction.channel.id)
         await self.repos.settings.set_value(interaction.guild.id, "meta", "ticket_condition_message_id", message.id)
+        await self.repos.settings.set_value(interaction.guild.id, "meta", "ticket_condition_reset_at", reset_at)
         await interaction.response.send_message(embed=success_embed("티켓 현황 패널 생성 완료"), ephemeral=True)
 
-    async def build_ticket_condition_embed(self, guild: discord.Guild) -> discord.Embed:
+    async def build_ticket_condition_embed(self, guild: discord.Guild, reset_at: int | None = None) -> discord.Embed:
         sellers = await self.repos.sellers.list_active_options(guild.id)
         embed = info_embed("TICKET CONDITION", "현재 열려있는 구매 티켓 수를 표시합니다.")
+        if reset_at is None:
+            settings = await self.repos.settings.get(guild.id)
+            reset_at = settings["meta"].get("ticket_condition_reset_at")
         if not sellers:
             embed.description = "등록된 셀러가 없습니다."
+            if reset_at:
+                embed.add_field(name="LAST RESET", value=f"<t:{reset_at}:F> (<t:{reset_at}:R>)", inline=False)
             return embed
         for seller in sellers:
             opened = await self.repos.tickets.count_open_for_seller(guild.id, seller["user_id"])
             suffix = " (비활성화)" if seller.get("ticket_disabled") else ""
             embed.add_field(name=f"{seller.get('user_name', seller['user_id'])}{suffix}", value=f"{opened}개", inline=False)
+        if reset_at:
+            embed.add_field(name="LAST RESET", value=f"<t:{reset_at}:F> (<t:{reset_at}:R>)", inline=False)
         return embed
 
     @tasks.loop(minutes=1)
@@ -71,7 +82,11 @@ class EventsCog(commands.Cog):
                 continue
             try:
                 message = await channel.fetch_message(message_id)
-                await message.edit(embed=await self.build_ticket_condition_embed(guild))
+                reset_at = settings["meta"].get("ticket_condition_reset_at")
+                if reset_at is None:
+                    reset_at = int(message.created_at.timestamp())
+                    await self.repos.settings.set_value(guild.id, "meta", "ticket_condition_reset_at", reset_at)
+                await message.edit(embed=await self.build_ticket_condition_embed(guild, reset_at=reset_at))
             except discord.HTTPException:
                 continue
 

@@ -85,7 +85,7 @@ def default_settings(guild_id: int) -> dict:
         "roles": {key: None for key in ROLE_KEYS},
         "channels": {key: None for key in CHANNEL_KEYS},
         "categories": {key: None for key in CATEGORY_KEYS},
-        "meta": {"ticket_condition_message_id": None},
+        "meta": {"ticket_condition_message_id": None, "ticket_condition_reset_at": None},
         "created_at": _now(),
         "updated_at": _now(),
     }
