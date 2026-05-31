@@ -10,7 +10,7 @@ from discord.ext import commands, tasks
 
 from utils.embeds import error_embed, info_embed, success_embed
 from utils.panels import restore_panel_message, save_panel_location
-from utils.permissions import deny_ticket_access
+from utils.permissions import deny_ticket_access, allow_ticket_access
 from utils.roles import has_role
 from utils.tickets import collect_channel_transcript, safe_channel_name
 
@@ -196,16 +196,12 @@ class PurchaseCog(commands.Cog):
         if seller is None:
             await interaction.followup.send(embed=error_embed("셀러 오류", "셀러 멤버를 찾을 수 없습니다."), ephemeral=True)
             return
+        
+        await allow_ticket_access(channel, interaction.user)
 
-        overwrites = {
-            guild.default_role: discord.PermissionOverwrite(view_channel=False),
-            interaction.user: discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True),
-            seller: discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True),
-        }
         channel = await guild.create_text_channel(
             name=safe_channel_name("구매", interaction.user.display_name),
             category=category if isinstance(category, discord.CategoryChannel) else None,
-            overwrites=overwrites,
             reason="DevilBlox purchase ticket opened",
         )
         await self.repos.tickets.create(
@@ -215,6 +211,7 @@ class PurchaseCog(commands.Cog):
             channel.id,
             seller_id=seller.id,
         )
+        
         await self.add_seller_current_ticket(guild.id, seller.id, channel.id)
         await self.refresh_ticket_condition_panel(guild)
 
