@@ -28,9 +28,13 @@ CHANNEL_KEYS = {
     "verify_log": "인증 로그",
     "join_leave_log": "입퇴장 로그",
     "purchase_log": "구매 로그",
+    "vending_admin": "자판기 관리자",
+    "vending_log": "자판기 로그",
     "middleman_log": "중개 로그",
     "seller_announce": "셀러 공지",
     "ticket_condition": "티켓 현황",
+    "vending": "자판기 패널",
+    "archive": "아카이브 패널",
 }
 
 CATEGORY_KEYS = {
@@ -75,6 +79,8 @@ LEGACY_SETTING_MAP = {
     "alarm_panel_msg": ("meta", "alarm_panel_message_id"),
     "middleman_panel_msg": ("meta", "middleman_panel_message_id"),
     "purchase_panel_msg": ("meta", "purchase_panel_message_id"),
+    "vending_panel_msg": ("meta", "vending_panel_message_id"),
+    "archive_panel_msg": ("meta", "archive_panel_message_id"),
     "support_panel_msg": ("meta", "support_panel_message_id"),
     "verify_panel_msg": ("meta", "verify_panel_message_id"),
 }
@@ -98,6 +104,8 @@ def default_settings(guild_id: int) -> dict:
             "alarm_panel_message_id": None,
             "middleman_panel_message_id": None,
             "purchase_panel_message_id": None,
+            "vending_panel_message_id": None,
+            "archive_panel_message_id": None,
             "support_panel_message_id": None,
             "verify_panel_message_id": None,
         },

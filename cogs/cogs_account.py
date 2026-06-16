@@ -81,6 +81,7 @@ class AccountCog(commands.Cog):
         embed.add_field(name="유저", value=f"{member.mention} (`{member.id}`)", inline=False)
         embed.add_field(name="현재 등급", value=grade_role.mention if grade_role else "미설정", inline=False)
         embed.add_field(name="누적 사용 금액", value=f"{user.get('accrued_spent', 0):,}원", inline=True)
+        embed.add_field(name="자판기 잔액", value=f"{user.get('cash', 0):,}원", inline=True)
         embed.add_field(name="보유 포인트", value=f"{user.get('points', 0):,}P", inline=True)
         embed.add_field(
             name="중개 로그 익명 여부",
