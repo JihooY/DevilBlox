@@ -2,7 +2,7 @@ from .coupons import CouponStore
 from .settings import GuildSettingsStore
 from .tickets import MiddlemanStore, SellerStore, TicketStore
 from .users import UserStore
-from .vending import ArchiveStore, ProductStore, VendingLogStore
+from .vending import ArchiveStore, ProductCategoryStore, ProductStore, VendingLogStore
 
 
 class Repositories:
@@ -13,6 +13,7 @@ class Repositories:
         self.sellers = SellerStore(db)
         self.middlemen = MiddlemanStore(db)
         self.coupons = CouponStore(db)
+        self.product_categories = ProductCategoryStore(db)
         self.products = ProductStore(db)
         self.archives = ArchiveStore(db)
         self.vending = VendingLogStore(db)
@@ -25,6 +26,7 @@ class Repositories:
             self.sellers,
             self.middlemen,
             self.coupons,
+            self.product_categories,
             self.products,
             self.archives,
             self.vending,

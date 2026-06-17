@@ -18,6 +18,81 @@ def normalize_product_id(product_id: str) -> str:
     return product_id.strip().casefold()
 
 
+def category_key(guild_id: int, category_id: str) -> str:
+    return f"{guild_id}:{normalize_product_id(category_id)}"
+
+
+class ProductCategoryStore:
+    def __init__(self, db):
+        self.collection = db["product_categories"]
+
+    async def ensure_indexes(self):
+        await self.collection.create_index([("guild_id", 1), ("category_id_lower", 1)], unique=True)
+        await self.collection.create_index([("guild_id", 1), ("active", 1), ("sort_order", 1)])
+
+    async def upsert(
+        self,
+        guild_id: int,
+        category_id: str,
+        *,
+        name: str,
+        description: str = "",
+        emoji: str = "",
+        sort_order: int = 0,
+        created_by: int | None = None,
+    ):
+        now = _now()
+        category_id = category_id.strip()
+        category_id_lower = normalize_product_id(category_id)
+        doc = {
+            "guild_id": guild_id,
+            "category_id": category_id,
+            "category_id_lower": category_id_lower,
+            "name": name.strip() or category_id,
+            "description": description.strip(),
+            "emoji": emoji.strip(),
+            "sort_order": int(sort_order),
+            "active": True,
+            "updated_at": now,
+        }
+        if created_by is not None:
+            doc["updated_by"] = created_by
+
+        await self.collection.update_one(
+            {"_id": category_key(guild_id, category_id)},
+            {
+                "$set": doc,
+                "$setOnInsert": {
+                    "_id": category_key(guild_id, category_id),
+                    "created_by": created_by,
+                    "created_at": now,
+                },
+            },
+            upsert=True,
+        )
+        return await self.get(guild_id, category_id, include_inactive=True)
+
+    async def get(self, guild_id: int, category_id: str, *, include_inactive: bool = False):
+        query = {"_id": category_key(guild_id, category_id)}
+        if not include_inactive:
+            query["active"] = True
+        return await self.collection.find_one(query)
+
+    async def list_active(self, guild_id: int, limit: int = 25):
+        return (
+            await self.collection.find({"guild_id": guild_id, "active": True})
+            .sort([("sort_order", 1), ("name", 1), ("category_id", 1)])
+            .to_list(length=limit)
+        )
+
+    async def deactivate(self, guild_id: int, category_id: str, deleted_by: int | None = None) -> bool:
+        result = await self.collection.update_one(
+            {"_id": category_key(guild_id, category_id), "active": True},
+            {"$set": {"active": False, "deleted_by": deleted_by, "updated_at": _now()}},
+        )
+        return result.modified_count > 0
+
+
 class ProductStore:
     def __init__(self, db):
         self.collection = db["products"]
@@ -26,6 +101,7 @@ class ProductStore:
         await self.collection.create_index([("guild_id", 1), ("product_id_lower", 1)], unique=True)
         await self.collection.create_index([("guild_id", 1), ("seller_id", 1)])
         await self.collection.create_index([("guild_id", 1), ("active", 1)])
+        await self.collection.create_index([("guild_id", 1), ("category_id_lower", 1), ("active", 1)])
 
     async def upsert(
         self,
@@ -37,6 +113,7 @@ class ProductStore:
         terabox_url: str,
         description: str = "",
         seller_id: int | None = None,
+        category_id: str = "",
         thread_id: int | None = None,
         page_url: str = "",
         created_by: int | None = None,
@@ -44,10 +121,14 @@ class ProductStore:
         now = _now()
         product_id = product_id.strip()
         product_id_lower = normalize_product_id(product_id)
+        category_id = category_id.strip()
+        category_id_lower = normalize_product_id(category_id) if category_id else ""
         doc = {
             "guild_id": guild_id,
             "product_id": product_id,
             "product_id_lower": product_id_lower,
+            "category_id": category_id,
+            "category_id_lower": category_id_lower,
             "title": title.strip() or product_id,
             "price": int(price),
             "terabox_url": terabox_url.strip(),
@@ -84,6 +165,19 @@ class ProductStore:
     async def list_active(self, guild_id: int, limit: int = 25):
         return (
             await self.collection.find({"guild_id": guild_id, "active": True})
+            .sort([("title", 1), ("product_id", 1)])
+            .to_list(length=limit)
+        )
+
+    async def list_by_category(self, guild_id: int, category_id: str, limit: int = 25):
+        return (
+            await self.collection.find(
+                {
+                    "guild_id": guild_id,
+                    "category_id_lower": normalize_product_id(category_id),
+                    "active": True,
+                }
+            )
             .sort([("title", 1), ("product_id", 1)])
             .to_list(length=limit)
         )
