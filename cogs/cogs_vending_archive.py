@@ -542,12 +542,16 @@ class VendingArchiveCog(commands.Cog):
 
     async def get_admin_channel(self, guild: discord.Guild):
         settings = await self.repos.settings.get(guild.id)
-        channel_id = settings["channels"].get("vending_admin") or settings["channels"].get("purchase_log")
+        channel_id = settings["channels"].get("vending_admin")
+        if channel_id and channel_id == settings["channels"].get("vending"):
+            return None
         return guild.get_channel(channel_id or 0)
 
     async def get_log_channel(self, guild: discord.Guild):
         settings = await self.repos.settings.get(guild.id)
-        channel_id = settings["channels"].get("vending_log") or settings["channels"].get("purchase_log")
+        channel_id = settings["channels"].get("vending_log")
+        if channel_id and channel_id == settings["channels"].get("vending"):
+            return None
         return guild.get_channel(channel_id or 0)
 
     def product_page_url(self, guild_id: int, product: dict | None) -> str | None:
@@ -802,7 +806,10 @@ class VendingArchiveCog(commands.Cog):
         admin_channel = await self.get_admin_channel(interaction.guild)
         if admin_channel is None:
             await interaction.followup.send(
-                embed=error_embed("관리자 채널 미설정", "`/채널설정`으로 자판기 관리자 채널을 먼저 설정해주세요."),
+                embed=error_embed(
+                    "관리자 채널 미설정",
+                    "`/채널설정`으로 자판기 관리자 채널을 패널 채널과 다른 채널로 설정해주세요.",
+                ),
                 ephemeral=True,
             )
             return
@@ -832,32 +839,14 @@ class VendingArchiveCog(commands.Cog):
         )
         admin_proof_url = admin_message.attachments[0].url if admin_message.attachments else ""
 
-        request_channel = interaction.channel if hasattr(interaction.channel, "send") else None
-        request_message = None
-        request_proof_url = ""
-        if request_channel is not None and request_channel.id != admin_channel.id:
-            request_file = discord.File(io.BytesIO(proof_bytes), filename=proof_filename)
-            try:
-                request_message = await request_channel.send(
-                    content=interaction.user.mention,
-                    embed=self.build_charge_embed(charge, image_url=attachment_image_url(proof_filename), public=True),
-                    file=request_file,
-                )
-                request_proof_url = request_message.attachments[0].url if request_message.attachments else ""
-            except discord.HTTPException:
-                request_message = None
-                request_proof_url = ""
-        elif request_channel is not None:
-            request_message = admin_message
-            request_proof_url = admin_proof_url
+        request_channel = admin_channel
+        request_message = admin_message
+        request_proof_url = admin_proof_url
 
         log_channel = await self.get_log_channel(interaction.guild)
         log_message = None
         log_proof_url = ""
-        if log_channel is not None and log_channel.id not in {
-            admin_channel.id,
-            request_channel.id if request_channel is not None else 0,
-        }:
+        if log_channel is not None and log_channel.id != admin_channel.id:
             log_file = discord.File(io.BytesIO(proof_bytes), filename=proof_filename)
             try:
                 log_message = await self.send_charge_request_log(
