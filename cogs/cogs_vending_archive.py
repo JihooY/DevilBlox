@@ -110,18 +110,25 @@ class ChargeRequestModal(discord.ui.Modal, title="충전 신청"):
         placeholder="예: 10000",
         max_length=20,
     )
-    proof = discord.ui.FileUpload(required=True, min_values=1, max_values=1)
 
     def __init__(self, cog: "VendingArchiveCog"):
         super().__init__()
         self.cog = cog
+        self.proof_upload = discord.ui.FileUpload(required=True, min_values=1, max_values=1)
+        self.add_item(
+            discord.ui.Label(
+                text="입금 사진",
+                description="입금 확인용 이미지 1장을 업로드하세요.",
+                component=self.proof_upload,
+            )
+        )
 
     async def on_submit(self, interaction: discord.Interaction):
         await self.cog.handle_charge_submit(
             interaction,
             depositor_name=str(self.depositor_name.value),
             amount_text=str(self.amount.value),
-            proof=self.proof.values[0] if self.proof.values else None,
+            proof=self.proof_upload.values[0] if self.proof_upload.values else None,
         )
 
 
