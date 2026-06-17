@@ -411,7 +411,6 @@ class VendingLogStore:
                     "guild_id": guild_id,
                     "user_id": user_id,
                     "product_id_lower": product_id_lower,
-                    "purchased_at": now,
                 },
             },
             upsert=True,
