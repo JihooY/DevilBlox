@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import io
 import os
 import re
 from urllib.parse import parse_qs, urlparse
@@ -23,6 +24,8 @@ from utils.roles import has_role
 YOUTUBE_HOSTS = {"youtube.com", "www.youtube.com", "m.youtube.com", "youtu.be", "www.youtu.be"}
 COLOR_VENDING = 0x5865F2
 COLOR_ARCHIVE = 0x2ECC71
+MAX_CHARGE_PROOF_BYTES = 8 * 1024 * 1024
+IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".gif"}
 
 
 def parse_positive_amount(value: str) -> int | None:
@@ -45,6 +48,25 @@ def is_http_url(value: str) -> bool:
         return False
     parsed = urlparse(value.strip())
     return parsed.scheme in {"http", "https"} and bool(parsed.netloc)
+
+
+def safe_attachment_filename(attachment: discord.Attachment) -> str:
+    filename = re.sub(r"[^A-Za-z0-9_.-]", "_", attachment.filename or "deposit-proof.png")
+    if "." not in filename:
+        filename += ".png"
+    return filename[:80]
+
+
+def is_image_attachment(attachment: discord.Attachment) -> bool:
+    content_type = (attachment.content_type or "").casefold()
+    if content_type.startswith("image/"):
+        return True
+    filename = (attachment.filename or "").casefold()
+    return any(filename.endswith(extension) for extension in IMAGE_EXTENSIONS)
+
+
+def attachment_image_url(filename: str) -> str:
+    return f"attachment://{filename}"
 
 
 def normalize_youtube_url(raw_url: str) -> tuple[str, str] | None:
@@ -88,6 +110,7 @@ class ChargeRequestModal(discord.ui.Modal, title="충전 신청"):
         placeholder="예: 10000",
         max_length=20,
     )
+    proof = discord.ui.FileUpload(required=True, min_values=1, max_values=1)
 
     def __init__(self, cog: "VendingArchiveCog"):
         super().__init__()
@@ -98,6 +121,7 @@ class ChargeRequestModal(discord.ui.Modal, title="충전 신청"):
             interaction,
             depositor_name=str(self.depositor_name.value),
             amount_text=str(self.amount.value),
+            proof=self.proof.values[0] if self.proof.values else None,
         )
 
 
@@ -206,7 +230,6 @@ class VendingPanelView(discord.ui.LayoutView):
             custom_id="devilblox:vending:charge",
         )
         charge_button.callback = self.charge
-        container.add_item(charge_button)
 
         catalog_button = discord.ui.Button(
             label="상품목록",
@@ -214,7 +237,6 @@ class VendingPanelView(discord.ui.LayoutView):
             custom_id="devilblox:vending:catalog",
         )
         catalog_button.callback = self.catalog
-        container.add_item(catalog_button)
 
         buy_button = discord.ui.Button(
             label="구매",
@@ -222,7 +244,6 @@ class VendingPanelView(discord.ui.LayoutView):
             custom_id="devilblox:vending:buy",
         )
         buy_button.callback = self.buy
-        container.add_item(buy_button)
 
         download_button = discord.ui.Button(
             label="다운로드",
@@ -230,7 +251,7 @@ class VendingPanelView(discord.ui.LayoutView):
             custom_id="devilblox:vending:download",
         )
         download_button.callback = self.download
-        container.add_item(download_button)
+        container.add_item(discord.ui.ActionRow(charge_button, catalog_button, buy_button, download_button))
 
         self.add_item(container)
 
@@ -260,7 +281,7 @@ class ArchivePanelView(discord.ui.LayoutView):
             custom_id="devilblox:archive:search",
         )
         search_button.callback = self.search
-        container.add_item(search_button)
+        container.add_item(discord.ui.ActionRow(search_button))
         self.add_item(container)
 
     async def search(self, interaction: discord.Interaction):
@@ -325,7 +346,7 @@ class CategoryMenuView(discord.ui.LayoutView):
         container = discord.ui.Container(accent_color=COLOR_VENDING)
         container.add_item(discord.ui.TextDisplay(f"## {title}\n카테고리를 선택하면 해당 카테고리의 상품이 표시됩니다."))
         container.add_item(discord.ui.Separator())
-        container.add_item(CategorySelect(cog, categories, mode))
+        container.add_item(discord.ui.ActionRow(CategorySelect(cog, categories, mode)))
         self.add_item(container)
 
 
@@ -381,7 +402,7 @@ class ProductMenuView(discord.ui.LayoutView):
         container = discord.ui.Container(accent_color=COLOR_VENDING)
         container.add_item(discord.ui.TextDisplay("\n".join(lines)))
         container.add_item(discord.ui.Separator())
-        container.add_item(ProductSelect(cog, products, mode))
+        container.add_item(discord.ui.ActionRow(ProductSelect(cog, products, mode)))
         self.add_item(container)
 
 
@@ -409,10 +430,11 @@ class ProductDetailView(discord.ui.LayoutView):
             style=discord.ButtonStyle.success if not owned else discord.ButtonStyle.secondary,
         )
         buy_button.callback = self.buy
-        container.add_item(buy_button)
+        detail_buttons = [buy_button]
         page_url = cog.product_page_url(int(product["guild_id"]), product)
         if page_url:
-            container.add_item(discord.ui.Button(label="상품 페이지", style=discord.ButtonStyle.link, url=page_url))
+            detail_buttons.append(discord.ui.Button(label="상품 페이지", style=discord.ButtonStyle.link, url=page_url))
+        container.add_item(discord.ui.ActionRow(*detail_buttons))
         self.add_item(container)
 
     async def buy(self, interaction: discord.Interaction):
@@ -450,7 +472,7 @@ class DownloadSelectView(discord.ui.LayoutView):
         container = discord.ui.Container(accent_color=COLOR_VENDING)
         container.add_item(discord.ui.TextDisplay("## 다운로드\n링크를 다시 받을 상품을 하나 이상 선택하세요."))
         container.add_item(discord.ui.Separator())
-        container.add_item(DownloadSelect(cog, owned_products))
+        container.add_item(discord.ui.ActionRow(DownloadSelect(cog, owned_products)))
         self.add_item(container)
 
 
@@ -573,7 +595,14 @@ class VendingArchiveCog(commands.Cog):
     async def build_vending_panel_view(self, guild_id: int) -> VendingPanelView:
         return VendingPanelView(self, stats=await self.vending_panel_stats(guild_id))
 
-    def build_charge_embed(self, charge: dict, status_label: str | None = None) -> discord.Embed:
+    def build_charge_embed(
+        self,
+        charge: dict,
+        status_label: str | None = None,
+        *,
+        image_url: str | None = None,
+        public: bool = False,
+    ) -> discord.Embed:
         status = status_label or {
             "pending": "대기 중",
             "processing": "처리 중",
@@ -586,8 +615,28 @@ class VendingArchiveCog(commands.Cog):
         embed.add_field(name="유저", value=f"<@{charge['user_id']}> (`{charge['user_id']}`)", inline=False)
         embed.add_field(name="입금자명", value=charge.get("depositor_name") or "-", inline=True)
         embed.add_field(name="금액", value=f"{int(charge.get('amount', 0)):,}원", inline=True)
+        embed.add_field(
+            name="처리 방식",
+            value="관리자가 수락해야 잔액이 충전됩니다." if charge.get("status") == "pending" else "처리 완료된 요청입니다.",
+            inline=False,
+        )
+        if charge.get("processed_by"):
+            label = "승인 관리자" if charge.get("status") == "approved" else "거절 관리자"
+            embed.add_field(name=label, value=f"<@{charge['processed_by']}> (`{charge['processed_by']}`)", inline=False)
+        if charge.get("proof_filename"):
+            embed.add_field(name="입금 사진", value=charge["proof_filename"], inline=True)
         if charge.get("reject_reason"):
             embed.add_field(name="거절 사유", value=charge["reject_reason"], inline=False)
+        resolved_image_url = (
+            image_url
+            or charge.get("admin_proof_url")
+            or charge.get("request_proof_url")
+            or charge.get("log_proof_url")
+        )
+        if resolved_image_url:
+            embed.set_image(url=resolved_image_url)
+        if public:
+            embed.set_footer(text="요청 접수 화면입니다. 충전은 관리자 승인 후 반영됩니다.")
         return embed
 
     async def send_charge_log(self, guild: discord.Guild, charge: dict):
@@ -598,11 +647,33 @@ class VendingArchiveCog(commands.Cog):
         embed = info_embed("충전 로그")
         embed.add_field(name="처리 결과", value=status, inline=True)
         embed.add_field(name="요청 유저", value=f"<@{charge['user_id']}>", inline=True)
+        if charge.get("processed_by"):
+            embed.add_field(name="처리 관리자", value=f"<@{charge['processed_by']}>", inline=True)
         embed.add_field(name="입금자명", value=charge.get("depositor_name") or "-", inline=True)
         embed.add_field(name="충전 금액", value=f"{int(charge.get('amount', 0)):,}원", inline=True)
         if charge.get("reject_reason"):
             embed.add_field(name="거절 사유", value=charge["reject_reason"], inline=False)
+        proof_url = charge.get("admin_proof_url") or charge.get("request_proof_url") or charge.get("log_proof_url")
+        if proof_url:
+            embed.set_image(url=proof_url)
         await channel.send(embed=embed)
+
+    async def send_charge_request_log(
+        self,
+        guild: discord.Guild,
+        charge: dict,
+        *,
+        image_url: str | None = None,
+        file: discord.File | None = None,
+    ):
+        channel = await self.get_log_channel(guild)
+        if not channel:
+            return None
+        embed = self.build_charge_embed(charge, image_url=image_url)
+        embed.title = "충전 요청 로그"
+        if file is not None:
+            return await channel.send(embed=embed, file=file)
+        return await channel.send(embed=embed)
 
     async def send_purchase_log(self, guild: discord.Guild, log_doc: dict):
         channel = await self.get_log_channel(guild)
@@ -629,17 +700,78 @@ class VendingArchiveCog(commands.Cog):
         except discord.HTTPException:
             return
 
-    async def edit_charge_message(self, guild: discord.Guild, charge: dict):
-        channel = guild.get_channel(charge.get("admin_channel_id") or 0)
+    async def edit_charge_message(
+        self,
+        guild: discord.Guild,
+        charge: dict,
+        *,
+        channel_id: int | None,
+        message_id: int | None,
+        image_url: str | None = None,
+        public: bool = False,
+        view: discord.ui.View | None = None,
+    ):
+        if not channel_id or not message_id:
+            return
+        channel = guild.get_channel(channel_id)
         if not channel or not hasattr(channel, "fetch_message"):
             return
         try:
-            message = await channel.fetch_message(charge["admin_message_id"])
-            await message.edit(embed=self.build_charge_embed(charge), view=None)
+            message = await channel.fetch_message(message_id)
+            await message.edit(embed=self.build_charge_embed(charge, image_url=image_url, public=public), view=view)
         except discord.HTTPException:
             return
 
-    async def handle_charge_submit(self, interaction: discord.Interaction, *, depositor_name: str, amount_text: str):
+    async def edit_charge_messages(self, guild: discord.Guild, charge: dict):
+        seen: set[tuple[int, int]] = set()
+        targets = [
+            (
+                charge.get("admin_channel_id"),
+                charge.get("admin_message_id"),
+                charge.get("admin_proof_url"),
+                False,
+                None,
+            ),
+            (
+                charge.get("request_channel_id"),
+                charge.get("request_message_id"),
+                charge.get("request_proof_url"),
+                True,
+                None,
+            ),
+            (
+                charge.get("log_channel_id"),
+                charge.get("log_message_id"),
+                charge.get("log_proof_url"),
+                False,
+                None,
+            ),
+        ]
+        for channel_id, message_id, image_url, public, view in targets:
+            if not channel_id or not message_id:
+                continue
+            key = (int(channel_id), int(message_id))
+            if key in seen:
+                continue
+            seen.add(key)
+            await self.edit_charge_message(
+                guild,
+                charge,
+                channel_id=int(channel_id),
+                message_id=int(message_id),
+                image_url=image_url,
+                public=public,
+                view=view,
+            )
+
+    async def handle_charge_submit(
+        self,
+        interaction: discord.Interaction,
+        *,
+        depositor_name: str,
+        amount_text: str,
+        proof: discord.Attachment | None,
+    ):
         await interaction.response.defer(ephemeral=True)
         if not interaction.guild:
             await interaction.followup.send(embed=error_embed("처리 실패", "서버 안에서만 사용할 수 있습니다."), ephemeral=True)
@@ -647,6 +779,18 @@ class VendingArchiveCog(commands.Cog):
         amount = parse_positive_amount(amount_text)
         if amount is None:
             await interaction.followup.send(embed=error_embed("금액 오류", "1원 이상의 숫자로 입력해주세요."), ephemeral=True)
+            return
+        if proof is None:
+            await interaction.followup.send(embed=error_embed("입금 사진 없음", "입금 확인 사진을 1장 업로드해주세요."), ephemeral=True)
+            return
+        if not is_image_attachment(proof):
+            await interaction.followup.send(embed=error_embed("파일 오류", "입금 사진은 이미지 파일만 업로드할 수 있습니다."), ephemeral=True)
+            return
+        if proof.size > MAX_CHARGE_PROOF_BYTES:
+            await interaction.followup.send(
+                embed=error_embed("파일 용량 오류", "입금 사진은 8MB 이하로 업로드해주세요."),
+                ephemeral=True,
+            )
             return
         admin_channel = await self.get_admin_channel(interaction.guild)
         if admin_channel is None:
@@ -656,14 +800,82 @@ class VendingArchiveCog(commands.Cog):
             )
             return
 
+        proof_filename = safe_attachment_filename(proof)
+        try:
+            proof_bytes = await proof.read()
+        except discord.HTTPException:
+            await interaction.followup.send(embed=error_embed("파일 처리 실패", "입금 사진을 읽지 못했습니다. 다시 시도해주세요."), ephemeral=True)
+            return
+
         charge = await self.repos.vending.create_charge_request(
             interaction.guild.id,
             interaction.user.id,
             depositor_name,
             amount,
+            proof_filename=proof_filename,
+            proof_content_type=proof.content_type or "",
+            proof_size=proof.size,
         )
-        message = await admin_channel.send(embed=self.build_charge_embed(charge), view=ChargeAdminView(self))
-        await self.repos.vending.attach_charge_message(charge["_id"], admin_channel.id, message.id)
+
+        admin_file = discord.File(io.BytesIO(proof_bytes), filename=proof_filename)
+        admin_message = await admin_channel.send(
+            embed=self.build_charge_embed(charge, image_url=attachment_image_url(proof_filename)),
+            view=ChargeAdminView(self),
+            file=admin_file,
+        )
+        admin_proof_url = admin_message.attachments[0].url if admin_message.attachments else ""
+
+        request_channel = interaction.channel if hasattr(interaction.channel, "send") else None
+        request_message = None
+        request_proof_url = ""
+        if request_channel is not None and request_channel.id != admin_channel.id:
+            request_file = discord.File(io.BytesIO(proof_bytes), filename=proof_filename)
+            try:
+                request_message = await request_channel.send(
+                    content=interaction.user.mention,
+                    embed=self.build_charge_embed(charge, image_url=attachment_image_url(proof_filename), public=True),
+                    file=request_file,
+                )
+                request_proof_url = request_message.attachments[0].url if request_message.attachments else ""
+            except discord.HTTPException:
+                request_message = None
+                request_proof_url = ""
+        elif request_channel is not None:
+            request_message = admin_message
+            request_proof_url = admin_proof_url
+
+        log_channel = await self.get_log_channel(interaction.guild)
+        log_message = None
+        log_proof_url = ""
+        if log_channel is not None and log_channel.id not in {
+            admin_channel.id,
+            request_channel.id if request_channel is not None else 0,
+        }:
+            log_file = discord.File(io.BytesIO(proof_bytes), filename=proof_filename)
+            try:
+                log_message = await self.send_charge_request_log(
+                    interaction.guild,
+                    charge,
+                    image_url=attachment_image_url(proof_filename),
+                    file=log_file,
+                )
+                log_proof_url = log_message.attachments[0].url if log_message and log_message.attachments else ""
+            except discord.HTTPException:
+                log_message = None
+                log_proof_url = ""
+
+        charge = await self.repos.vending.attach_charge_message(
+            charge["_id"],
+            admin_channel.id,
+            admin_message.id,
+            request_channel_id=request_channel.id if request_channel is not None else None,
+            request_message_id=request_message.id if request_message is not None else None,
+            log_channel_id=log_channel.id if log_channel is not None and log_message is not None else None,
+            log_message_id=log_message.id if log_message is not None else None,
+            admin_proof_url=admin_proof_url,
+            request_proof_url=request_proof_url,
+            log_proof_url=log_proof_url,
+        )
 
         await interaction.followup.send(
             embed=success_embed("충전 신청 완료", "관리자가 입금을 확인하면 DM으로 결과를 알려드립니다."),
@@ -690,12 +902,12 @@ class VendingArchiveCog(commands.Cog):
 
         await self.repos.users.add_cash(interaction.guild.id, charge["user_id"], int(charge["amount"]))
         charge = await self.repos.vending.approve_charge_request(charge["_id"], interaction.user.id)
-        await self.edit_charge_message(interaction.guild, charge)
+        await self.edit_charge_messages(interaction.guild, charge)
         await self.send_charge_log(interaction.guild, charge)
         await self.send_user_dm(
             interaction.guild,
             charge["user_id"],
-            success_embed("충전 수락", f"{int(charge['amount']):,}원이 충전되었습니다."),
+            success_embed("충전 수락", f"{int(charge['amount']):,}원이 충전되었습니다.\n승인 관리자: {interaction.user.mention}"),
         )
         await interaction.followup.send(embed=success_embed("충전 수락 완료"), ephemeral=True)
 
@@ -718,12 +930,12 @@ class VendingArchiveCog(commands.Cog):
             await interaction.followup.send(embed=error_embed("이미 처리됨", "이미 처리된 충전 요청입니다."), ephemeral=True)
             return
 
-        await self.edit_charge_message(interaction.guild, charge)
+        await self.edit_charge_messages(interaction.guild, charge)
         await self.send_charge_log(interaction.guild, charge)
         await self.send_user_dm(
             interaction.guild,
             charge["user_id"],
-            error_embed("충전 거절", f"사유: {charge.get('reject_reason') or '사유 없음'}"),
+            error_embed("충전 거절", f"사유: {charge.get('reject_reason') or '사유 없음'}\n거절 관리자: {interaction.user.mention}"),
         )
         await interaction.followup.send(embed=success_embed("충전 거절 완료"), ephemeral=True)
 

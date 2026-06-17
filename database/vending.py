@@ -256,12 +256,25 @@ class VendingLogStore:
             unique=True,
         )
 
-    async def create_charge_request(self, guild_id: int, user_id: int, depositor_name: str, amount: int):
+    async def create_charge_request(
+        self,
+        guild_id: int,
+        user_id: int,
+        depositor_name: str,
+        amount: int,
+        *,
+        proof_filename: str = "",
+        proof_content_type: str = "",
+        proof_size: int = 0,
+    ):
         doc = {
             "guild_id": guild_id,
             "user_id": user_id,
             "depositor_name": depositor_name.strip(),
             "amount": int(amount),
+            "proof_filename": proof_filename,
+            "proof_content_type": proof_content_type,
+            "proof_size": int(proof_size or 0),
             "status": "pending",
             "requested_at": _now(),
             "updated_at": _now(),
@@ -270,17 +283,46 @@ class VendingLogStore:
         doc["_id"] = result.inserted_id
         return doc
 
-    async def attach_charge_message(self, request_id, channel_id: int, message_id: int):
-        await self.charge_logs.update_one(
+    async def attach_charge_message(
+        self,
+        request_id,
+        channel_id: int,
+        message_id: int,
+        *,
+        request_channel_id: int | None = None,
+        request_message_id: int | None = None,
+        log_channel_id: int | None = None,
+        log_message_id: int | None = None,
+        admin_proof_url: str = "",
+        request_proof_url: str = "",
+        log_proof_url: str = "",
+    ):
+        updates = {
+            "admin_channel_id": channel_id,
+            "admin_message_id": message_id,
+            "updated_at": _now(),
+        }
+        if request_channel_id is not None:
+            updates["request_channel_id"] = request_channel_id
+        if request_message_id is not None:
+            updates["request_message_id"] = request_message_id
+        if log_channel_id is not None:
+            updates["log_channel_id"] = log_channel_id
+        if log_message_id is not None:
+            updates["log_message_id"] = log_message_id
+        if admin_proof_url:
+            updates["admin_proof_url"] = admin_proof_url
+        if request_proof_url:
+            updates["request_proof_url"] = request_proof_url
+        if log_proof_url:
+            updates["log_proof_url"] = log_proof_url
+
+        result = await self.charge_logs.find_one_and_update(
             {"_id": request_id},
-            {
-                "$set": {
-                    "admin_channel_id": channel_id,
-                    "admin_message_id": message_id,
-                    "updated_at": _now(),
-                }
-            },
+            {"$set": updates},
+            return_document=ReturnDocument.AFTER,
         )
+        return result
 
     async def get_charge_by_admin_message(self, guild_id: int, message_id: int):
         return await self.charge_logs.find_one({"guild_id": guild_id, "admin_message_id": message_id})
