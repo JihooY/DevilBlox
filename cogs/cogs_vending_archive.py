@@ -540,17 +540,17 @@ class VendingArchiveCog(commands.Cog):
         settings = await self.repos.settings.get(interaction.guild.id)
         return has_role(interaction.user, settings["roles"].get("seller"))
 
-    async def get_admin_channel(self, guild: discord.Guild):
+    async def get_admin_channel(self, guild: discord.Guild, *, forbidden_channel_id: int | None = None):
         settings = await self.repos.settings.get(guild.id)
         channel_id = settings["channels"].get("vending_admin")
-        if channel_id and channel_id == settings["channels"].get("vending"):
+        if channel_id and channel_id in {settings["channels"].get("vending"), forbidden_channel_id}:
             return None
         return guild.get_channel(channel_id or 0)
 
-    async def get_log_channel(self, guild: discord.Guild):
+    async def get_log_channel(self, guild: discord.Guild, *, forbidden_channel_id: int | None = None):
         settings = await self.repos.settings.get(guild.id)
         channel_id = settings["channels"].get("vending_log")
-        if channel_id and channel_id == settings["channels"].get("vending"):
+        if channel_id and channel_id in {settings["channels"].get("vending"), forbidden_channel_id}:
             return None
         return guild.get_channel(channel_id or 0)
 
@@ -733,7 +733,26 @@ class VendingArchiveCog(commands.Cog):
         except discord.HTTPException:
             return
 
+    async def delete_charge_message(self, guild: discord.Guild, channel_id: int | None, message_id: int | None):
+        if not channel_id or not message_id:
+            return
+        channel = guild.get_channel(channel_id)
+        if not channel or not hasattr(channel, "fetch_message"):
+            return
+        try:
+            message = await channel.fetch_message(message_id)
+            await message.delete()
+        except discord.HTTPException:
+            return
+
     async def edit_charge_messages(self, guild: discord.Guild, charge: dict):
+        admin_target = (charge.get("admin_channel_id"), charge.get("admin_message_id"))
+        log_target = (charge.get("log_channel_id"), charge.get("log_message_id"))
+        request_target = (charge.get("request_channel_id"), charge.get("request_message_id"))
+
+        if request_target[0] and request_target[1] and request_target not in {admin_target, log_target}:
+            await self.delete_charge_message(guild, request_target[0], request_target[1])
+
         seen: set[tuple[int, int]] = set()
         targets = [
             (
@@ -741,13 +760,6 @@ class VendingArchiveCog(commands.Cog):
                 charge.get("admin_message_id"),
                 charge.get("admin_proof_url"),
                 False,
-                None,
-            ),
-            (
-                charge.get("request_channel_id"),
-                charge.get("request_message_id"),
-                charge.get("request_proof_url"),
-                True,
                 None,
             ),
             (
@@ -803,7 +815,7 @@ class VendingArchiveCog(commands.Cog):
                 ephemeral=True,
             )
             return
-        admin_channel = await self.get_admin_channel(interaction.guild)
+        admin_channel = await self.get_admin_channel(interaction.guild, forbidden_channel_id=interaction.channel_id)
         if admin_channel is None:
             await interaction.followup.send(
                 embed=error_embed(
@@ -843,7 +855,7 @@ class VendingArchiveCog(commands.Cog):
         request_message = admin_message
         request_proof_url = admin_proof_url
 
-        log_channel = await self.get_log_channel(interaction.guild)
+        log_channel = await self.get_log_channel(interaction.guild, forbidden_channel_id=interaction.channel_id)
         log_message = None
         log_proof_url = ""
         if log_channel is not None and log_channel.id != admin_channel.id:
