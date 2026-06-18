@@ -10,7 +10,7 @@ from discord.ext import commands, tasks
 
 from utils.embeds import error_embed, info_embed, success_embed
 from utils.panels import restore_panel_message, save_panel_location
-from utils.permissions import deny_ticket_access, allow_ticket_access
+from utils.permissions import deny_ticket_access
 from utils.roles import has_role
 from utils.tickets import collect_channel_transcript, safe_channel_name
 
@@ -65,7 +65,8 @@ class PurchaseSelect(discord.ui.Select):
 
     async def callback(self, interaction: discord.Interaction):
         if self.values[0] == "none":
-            await interaction.response.send_message(embed=error_embed("셀러 없음", "등록된 셀러가 없습니다."), ephemeral=True)
+            await interaction.response.defer(ephemeral=True)
+            await interaction.followup.send(embed=error_embed("셀러 없음", "등록된 셀러가 없습니다."), ephemeral=True)
             return
         await self.cog.open_purchase_ticket(interaction, int(self.values[0]))
 
@@ -96,6 +97,14 @@ class PurchaseCog(commands.Cog):
         seller_role = settings["roles"].get("seller")
         admin_role = settings["roles"].get("admin")
         return has_role(interaction.user, seller_role) or has_role(interaction.user, admin_role)
+
+    async def _admin_allowed(self, interaction: discord.Interaction) -> bool:
+        if not interaction.guild or not isinstance(interaction.user, discord.Member):
+            return False
+        if interaction.user.guild_permissions.administrator:
+            return True
+        settings = await self.repos.settings.get(interaction.guild.id)
+        return has_role(interaction.user, settings["roles"].get("admin"))
 
     async def refresh_ticket_condition_panel(self, guild: discord.Guild):
         events_cog = self.bot.get_cog("EventsCog")
@@ -183,11 +192,15 @@ class PurchaseCog(commands.Cog):
             await interaction.followup.send(embed=error_embed("티켓 비활성화", reason), ephemeral=True)
             return
 
-        existing = await self.repos.tickets.get_open_for_user(guild.id, interaction.user.id, "purchase")
+        existing = await self.repos.tickets.get_open_purchase_for_user_seller(
+            guild.id,
+            interaction.user.id,
+            seller_id,
+        )
         if existing:
             channel = guild.get_channel(existing["channel_id"])
             mention = channel.mention if channel else f"`{existing['channel_id']}`"
-            await interaction.followup.send(embed=error_embed("이미 열린 티켓", mention), ephemeral=True)
+            await interaction.followup.send(embed=error_embed("이미 열린 티켓", f"이 셀러와 열린 티켓이 있습니다: {mention}"), ephemeral=True)
             return
 
         settings = await self.repos.settings.get(guild.id)
@@ -196,12 +209,51 @@ class PurchaseCog(commands.Cog):
         if seller is None:
             await interaction.followup.send(embed=error_embed("셀러 오류", "셀러 멤버를 찾을 수 없습니다."), ephemeral=True)
             return
-        
-        await allow_ticket_access(channel, interaction.user)
+
+        overwrites = {
+            guild.default_role: discord.PermissionOverwrite(view_channel=False),
+            interaction.user: discord.PermissionOverwrite(
+                view_channel=True,
+                send_messages=True,
+                read_message_history=True,
+                embed_links=True,
+                attach_files=True,
+                use_application_commands=True,
+            ),
+            seller: discord.PermissionOverwrite(
+                view_channel=True,
+                send_messages=True,
+                read_message_history=True,
+                embed_links=True,
+                attach_files=True,
+                use_application_commands=True,
+            ),
+        }
+        admin_role = guild.get_role(settings["roles"].get("admin") or 0)
+        if admin_role is not None:
+            overwrites[admin_role] = discord.PermissionOverwrite(
+                view_channel=True,
+                send_messages=True,
+                read_message_history=True,
+                embed_links=True,
+                attach_files=True,
+                use_application_commands=True,
+            )
+        if guild.me is not None:
+            overwrites[guild.me] = discord.PermissionOverwrite(
+                view_channel=True,
+                send_messages=True,
+                read_message_history=True,
+                embed_links=True,
+                attach_files=True,
+                manage_channels=True,
+                use_application_commands=True,
+            )
 
         channel = await guild.create_text_channel(
-            name=safe_channel_name("구매", interaction.user.display_name),
+            name=safe_channel_name("구매", interaction.user.display_name, seller.display_name),
             category=category if isinstance(category, discord.CategoryChannel) else None,
+            overwrites=overwrites,
             reason="DevilBlox purchase ticket opened",
         )
         await self.repos.tickets.create(
@@ -215,7 +267,12 @@ class PurchaseCog(commands.Cog):
         await self.add_seller_current_ticket(guild.id, seller.id, channel.id)
         await self.refresh_ticket_condition_panel(guild)
 
-        embed = info_embed("PURCHASE", f"{interaction.user.mention}님이 구매 티켓을 열었습니다.")
+        account = (seller_doc.get("payment_account") or "").strip()
+        account_value = account or "아직 등록된 셀러 계좌가 없습니다. 셀러에게 계좌 안내를 요청해주세요."
+        embed = info_embed("PURCHASE", f"{interaction.user.mention}님이 {seller.mention} 셀러 구매 티켓을 열었습니다.")
+        embed.add_field(name="셀러", value=seller.mention, inline=True)
+        embed.add_field(name="구매자", value=interaction.user.mention, inline=True)
+        embed.add_field(name="입금 계좌", value=account_value[:1024], inline=False)
         await channel.send(content=f"{interaction.user.mention} {seller.mention}", embed=embed)
         await interaction.followup.send(embed=success_embed("구매 티켓 생성 완료", channel.mention), ephemeral=True)
 
@@ -271,8 +328,9 @@ class PurchaseCog(commands.Cog):
     @app_commands.command(name="셀러등록", description="구매 패널에 표시할 셀러를 등록합니다.")
     @app_commands.default_permissions(administrator=True)
     async def register_seller(self, interaction: discord.Interaction, 셀러: discord.Member):
+        await interaction.response.defer(ephemeral=True)
         await self.repos.sellers.upsert(interaction.guild.id, 셀러.id, 셀러.display_name)
-        await interaction.response.send_message(
+        await interaction.followup.send(
             embed=success_embed("셀러 등록 완료", f"{셀러.mention}"),
             ephemeral=True,
         )
@@ -281,9 +339,10 @@ class PurchaseCog(commands.Cog):
     @app_commands.command(name="구매패널", description="현재 채널에 구매 패널을 생성합니다.")
     @app_commands.default_permissions(administrator=True)
     async def purchase_panel(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
         sellers = await self.repos.sellers.list_active_options(interaction.guild.id)
         if not sellers:
-            await interaction.response.send_message(
+            await interaction.followup.send(
                 embed=error_embed("셀러 없음", "`/셀러등록`으로 셀러를 먼저 등록해주세요."),
                 ephemeral=True,
             )
@@ -299,7 +358,7 @@ class PurchaseCog(commands.Cog):
             interaction.channel.id,
             message.id,
         )
-        await interaction.response.send_message(embed=success_embed("구매 패널 생성 완료"), ephemeral=True)
+        await interaction.followup.send(embed=success_embed("구매 패널 생성 완료"), ephemeral=True)
 
     @app_commands.command(name="구매티켓종료", description="현재 구매 티켓을 종료하고 판매 기록을 저장합니다.")
     @app_commands.default_permissions(send_messages=True)
@@ -315,6 +374,9 @@ class PurchaseCog(commands.Cog):
         ticket = await self.repos.tickets.get_by_channel(interaction.guild.id, interaction.channel_id, "purchase")
         if not ticket or ticket.get("status") != "open":
             await interaction.followup.send(embed=error_embed("티켓 오류", "열려있는 구매 티켓이 아닙니다."), ephemeral=True)
+            return
+        if not await self._admin_allowed(interaction) and ticket.get("seller_id") != interaction.user.id:
+            await interaction.followup.send(embed=error_embed("권한 없음", "이 티켓의 담당 셀러만 종료할 수 있습니다."), ephemeral=True)
             return
 
         buyer = await fetch_member(interaction.guild, ticket["user_id"])
@@ -387,6 +449,39 @@ class PurchaseCog(commands.Cog):
         await self.refresh_purchase_panel(interaction.guild)
         await interaction.followup.send(
             embed=success_embed("티켓 상태 변경", "비활성화" if disabled else "활성화"),
+            ephemeral=True,
+        )
+
+    @app_commands.command(name="계좌등록", description="구매 티켓에 자동 표시할 셀러 계좌를 등록하거나 수정합니다.")
+    @app_commands.default_permissions(send_messages=True)
+    @app_commands.describe(
+        계좌정보="예: 국민 123456-78-901234 홍길동",
+        셀러="관리자가 다른 셀러 계좌를 대신 등록할 때 선택합니다.",
+    )
+    async def seller_payment_account(
+        self,
+        interaction: discord.Interaction,
+        계좌정보: str,
+        셀러: discord.Member | None = None,
+    ):
+        await interaction.response.defer(ephemeral=True)
+        if not await self._seller_allowed(interaction):
+            await interaction.followup.send(embed=error_embed("권한 없음", "셀러 권한이 필요합니다."), ephemeral=True)
+            return
+        if not 계좌정보.strip() or len(계좌정보.strip()) > 500:
+            await interaction.followup.send(embed=error_embed("계좌 오류", "계좌 정보는 1~500자로 입력해주세요."), ephemeral=True)
+            return
+
+        is_admin = await self._admin_allowed(interaction)
+        target = 셀러 if 셀러 is not None and is_admin else interaction.user
+        if 셀러 is not None and not is_admin and 셀러.id != interaction.user.id:
+            await interaction.followup.send(embed=error_embed("권한 없음", "셀러는 본인 계좌만 등록할 수 있습니다."), ephemeral=True)
+            return
+
+        await self.repos.sellers.upsert(interaction.guild.id, target.id, target.display_name)
+        await self.repos.sellers.set_payment_account(interaction.guild.id, target.id, 계좌정보)
+        await interaction.followup.send(
+            embed=success_embed("계좌 등록 완료", f"{target.mention} 티켓에 자동 표시됩니다."),
             ephemeral=True,
         )
 

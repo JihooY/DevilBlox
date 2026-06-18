@@ -43,6 +43,17 @@ class TicketStore:
             {"guild_id": guild_id, "user_id": user_id, "kind": kind, "status": "open"}
         )
 
+    async def get_open_purchase_for_user_seller(self, guild_id: int, user_id: int, seller_id: int):
+        return await self.collection.find_one(
+            {
+                "guild_id": guild_id,
+                "user_id": user_id,
+                "seller_id": seller_id,
+                "kind": "purchase",
+                "status": "open",
+            }
+        )
+
     async def get_by_channel(self, guild_id: int, channel_id: int, kind: str | None = None):
         query = {"guild_id": guild_id, "channel_id": channel_id}
         if kind:
@@ -128,6 +139,7 @@ class SellerStore:
                     "current_ticket_count": 0,
                     "ticket_disabled": False,
                     "disabled_reason": "",
+                    "payment_account": "",
                     "created_at": now,
                 },
             },
@@ -144,6 +156,12 @@ class SellerStore:
         await self.collection.update_one(
             {"_id": keyed(guild_id, user_id)},
             {"$set": {"ticket_disabled": disabled, "disabled_reason": reason, "updated_at": _now()}},
+        )
+
+    async def set_payment_account(self, guild_id: int, user_id: int, payment_account: str):
+        await self.collection.update_one(
+            {"_id": keyed(guild_id, user_id)},
+            {"$set": {"payment_account": payment_account.strip(), "updated_at": _now()}},
         )
 
     async def _refresh_current_ticket_count(self, guild_id: int, user_id: int):

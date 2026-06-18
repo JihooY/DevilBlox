@@ -116,6 +116,7 @@ class ProductStore:
         category_id: str = "",
         thread_id: int | None = None,
         page_url: str = "",
+        stock: int | None = None,
         created_by: int | None = None,
     ):
         now = _now()
@@ -139,18 +140,24 @@ class ProductStore:
             "active": True,
             "updated_at": now,
         }
+        if stock is not None:
+            doc["stock"] = max(0, int(stock))
         if created_by is not None:
             doc["updated_by"] = created_by
+
+        set_on_insert = {
+            "_id": product_key(guild_id, product_id),
+            "created_by": created_by,
+            "created_at": now,
+        }
+        if stock is None:
+            set_on_insert["stock"] = 0
 
         await self.collection.update_one(
             {"_id": product_key(guild_id, product_id)},
             {
                 "$set": doc,
-                "$setOnInsert": {
-                    "_id": product_key(guild_id, product_id),
-                    "created_by": created_by,
-                    "created_at": now,
-                },
+                "$setOnInsert": set_on_insert,
             },
             upsert=True,
         )
@@ -169,6 +176,13 @@ class ProductStore:
             .to_list(length=limit)
         )
 
+    async def list_for_seller(self, guild_id: int, seller_id: int, limit: int = 25):
+        return (
+            await self.collection.find({"guild_id": guild_id, "seller_id": seller_id, "active": True})
+            .sort([("title", 1), ("product_id", 1)])
+            .to_list(length=limit)
+        )
+
     async def list_by_category(self, guild_id: int, category_id: str, limit: int = 25):
         return (
             await self.collection.find(
@@ -180,6 +194,21 @@ class ProductStore:
             )
             .sort([("title", 1), ("product_id", 1)])
             .to_list(length=limit)
+        )
+
+    async def adjust_stock(self, guild_id: int, product_id: str, delta: int):
+        delta = int(delta)
+        if delta == 0:
+            return await self.get(guild_id, product_id)
+
+        query = {"_id": product_key(guild_id, product_id), "active": True}
+        if delta < 0:
+            query["stock"] = {"$gte": abs(delta)}
+
+        return await self.collection.find_one_and_update(
+            query,
+            {"$inc": {"stock": delta}, "$set": {"updated_at": _now()}},
+            return_document=ReturnDocument.AFTER,
         )
 
     async def deactivate(self, guild_id: int, product_id: str, deleted_by: int | None = None) -> bool:
