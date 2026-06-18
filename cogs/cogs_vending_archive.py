@@ -1242,7 +1242,8 @@ class VendingArchiveCog(commands.Cog):
             interaction.channel.id,
             message.id,
         )
-        await interaction.followup.send(embed=success_embed("자판기 패널 생성 완료"), ephemeral=True)
+        embed = success_embed("자판기 패널 생성 완료")
+        await interaction.followup.send(**embed_gif_kwargs(embed, VENDING_SUCCESS_GIF), ephemeral=True)
 
     @app_commands.command(name="아카이브패널", description="현재 채널에 아카이브 검색 패널을 생성합니다.")
     @app_commands.default_permissions(administrator=True)
@@ -1261,7 +1262,8 @@ class VendingArchiveCog(commands.Cog):
             interaction.channel.id,
             message.id,
         )
-        await interaction.followup.send(embed=success_embed("아카이브 패널 생성 완료"), ephemeral=True)
+        embed = success_embed("아카이브 패널 생성 완료")
+        await interaction.followup.send(**embed_gif_kwargs(embed, VENDING_SUCCESS_GIF), ephemeral=True)
 
     @app_commands.command(name="아카이브검색", description="유튜브 URL로 아카이브를 검색합니다.")
     @app_commands.default_permissions(send_messages=True)
