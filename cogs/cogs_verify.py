@@ -14,7 +14,7 @@ from utils.roles import has_role
 
 VERIFY_TIMEOUT = 120
 MAX_ATTEMPTS = 3
-VERIFY_GIFS = ("verify1.gif", "verify2.gif", "verify3.gif", "festival_pair.gif")
+VERIFY_GIFS = ("verify1.gif", "verify2.gif", "verify3.gif", "festival_pair.gif", "starlight_panel.gif")
 
 
 class NumberButton(discord.ui.Button):

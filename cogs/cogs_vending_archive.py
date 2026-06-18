@@ -16,7 +16,8 @@ from database.vending import (
     VendingLogStore,
     normalize_product_id,
 )
-from utils.embeds import error_embed, info_embed, success_embed
+from utils.assets import asset_path, has_asset
+from utils.embeds import embed_gif_kwargs, error_embed, info_embed, success_embed
 from utils.panels import save_panel_location
 from utils.roles import has_role
 
@@ -26,6 +27,26 @@ COLOR_VENDING = 0x5865F2
 COLOR_ARCHIVE = 0x2ECC71
 MAX_CHARGE_PROOF_BYTES = 8 * 1024 * 1024
 IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".gif"}
+VENDING_PANEL_GIF = "abyss_ticket.gif"
+ARCHIVE_PANEL_GIF = "red_alert.gif"
+VENDING_SUCCESS_GIF = "success.gif"
+VENDING_DENIED_GIF = "denied.gif"
+
+
+def gif_file(filename: str) -> discord.File | None:
+    if not has_asset("gifs", filename):
+        return None
+    return discord.File(str(asset_path("gifs", filename)), filename=filename)
+
+
+def add_panel_gif(container: discord.ui.Container, filename: str, description: str):
+    if not has_asset("gifs", filename):
+        return
+    container.add_item(
+        discord.ui.MediaGallery(
+            discord.MediaGalleryItem(f"attachment://{filename}", description=description)
+        )
+    )
 
 
 def parse_positive_amount(value: str) -> int | None:
@@ -229,6 +250,7 @@ class VendingPanelView(discord.ui.LayoutView):
 
         container = discord.ui.Container(accent_color=COLOR_VENDING)
         container.add_item(discord.ui.TextDisplay("\n".join(lines)))
+        add_panel_gif(container, VENDING_PANEL_GIF, "DevilBlox vending panel")
         container.add_item(discord.ui.Separator())
 
         charge_button = discord.ui.Button(
@@ -281,6 +303,7 @@ class ArchivePanelView(discord.ui.LayoutView):
         self.cog = cog
         container = discord.ui.Container(accent_color=COLOR_ARCHIVE)
         container.add_item(discord.ui.TextDisplay("## ARCHIVE\n유튜브 영상 URL로 영상에 사용된 상품을 검색할 수 있습니다."))
+        add_panel_gif(container, ARCHIVE_PANEL_GIF, "DevilBlox archive panel")
         container.add_item(discord.ui.Separator())
         search_button = discord.ui.Button(
             label="검색",
@@ -612,6 +635,7 @@ class VendingArchiveCog(commands.Cog):
             "vending",
             "vending_panel_message_id",
             await self.build_vending_panel_view(guild.id),
+            image_attachment_filename=VENDING_PANEL_GIF,
         )
 
     def build_charge_embed(
@@ -675,7 +699,10 @@ class VendingArchiveCog(commands.Cog):
         proof_url = charge.get("admin_proof_url") or charge.get("request_proof_url") or charge.get("log_proof_url")
         if proof_url:
             embed.set_image(url=proof_url)
-        await channel.send(embed=embed)
+            await channel.send(embed=embed)
+            return
+        gif_name = VENDING_SUCCESS_GIF if charge.get("success") else VENDING_DENIED_GIF
+        await channel.send(**embed_gif_kwargs(embed, gif_name))
 
     async def send_charge_request_log(
         self,
@@ -705,7 +732,7 @@ class VendingArchiveCog(commands.Cog):
         embed.add_field(name="구매 전 금액", value=f"{log_doc['before_cash']:,}원", inline=True)
         embed.add_field(name="구매 후 잔액", value=f"{log_doc['after_cash']:,}원", inline=True)
         embed.add_field(name="가격", value=f"{log_doc['price']:,}원", inline=True)
-        await channel.send(embed=embed)
+        await channel.send(**embed_gif_kwargs(embed, VENDING_SUCCESS_GIF))
 
     async def send_user_dm(self, guild: discord.Guild, user_id: int, embed: discord.Embed):
         user = guild.get_member(user_id) or self.bot.get_user(user_id)
@@ -925,7 +952,8 @@ class VendingArchiveCog(commands.Cog):
             charge["user_id"],
             success_embed("충전 수락", f"{int(charge['amount']):,}원이 충전되었습니다.\n승인 관리자: {interaction.user.mention}"),
         )
-        await interaction.followup.send(embed=success_embed("충전 수락 완료"), ephemeral=True)
+        embed = success_embed("충전 수락 완료")
+        await interaction.followup.send(**embed_gif_kwargs(embed, VENDING_SUCCESS_GIF), ephemeral=True)
 
     async def handle_reject_charge(self, interaction: discord.Interaction, admin_message_id: int, reason: str):
         await interaction.response.defer(ephemeral=True)
@@ -953,7 +981,8 @@ class VendingArchiveCog(commands.Cog):
             charge["user_id"],
             error_embed("충전 거절", f"사유: {charge.get('reject_reason') or '사유 없음'}\n거절 관리자: {interaction.user.mention}"),
         )
-        await interaction.followup.send(embed=success_embed("충전 거절 완료"), ephemeral=True)
+        embed = success_embed("충전 거절 완료")
+        await interaction.followup.send(**embed_gif_kwargs(embed, VENDING_DENIED_GIF), ephemeral=True)
 
     async def handle_category_menu(self, interaction: discord.Interaction, mode: str):
         await interaction.response.defer(ephemeral=True)
@@ -1146,8 +1175,15 @@ class VendingArchiveCog(commands.Cog):
                 "vending",
                 "vending_panel_message_id",
                 await self.build_vending_panel_view(guild.id),
+                image_attachment_filename=VENDING_PANEL_GIF,
             )
-            await self.restore_v2_panel_message(guild, "archive", "archive_panel_message_id", ArchivePanelView(self))
+            await self.restore_v2_panel_message(
+                guild,
+                "archive",
+                "archive_panel_message_id",
+                ArchivePanelView(self),
+                image_attachment_filename=ARCHIVE_PANEL_GIF,
+            )
 
     @restore_panel_loop.before_loop
     async def before_restore_panel_loop(self):
@@ -1159,6 +1195,8 @@ class VendingArchiveCog(commands.Cog):
         channel_key: str,
         meta_key: str,
         view: discord.ui.LayoutView,
+        *,
+        image_attachment_filename: str | None = None,
     ) -> bool:
         settings = await self.repos.settings.get(guild.id)
         channel_id = settings["channels"].get(channel_key)
@@ -1170,7 +1208,16 @@ class VendingArchiveCog(commands.Cog):
             return False
         try:
             message = await channel.fetch_message(message_id)
-            await message.edit(content=None, embeds=[], view=view)
+            update = {"content": None, "embeds": [], "view": view}
+            if image_attachment_filename and has_asset("gifs", image_attachment_filename):
+                if not any(attachment.filename == image_attachment_filename for attachment in message.attachments):
+                    update["attachments"] = [
+                        discord.File(
+                            str(asset_path("gifs", image_attachment_filename)),
+                            filename=image_attachment_filename,
+                        )
+                    ]
+            await message.edit(**update)
         except discord.NotFound:
             await self.repos.settings.set_value(guild.id, "meta", meta_key, None)
             return False
@@ -1182,7 +1229,11 @@ class VendingArchiveCog(commands.Cog):
     @app_commands.default_permissions(administrator=True)
     async def vending_panel(self, interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True)
-        message = await interaction.channel.send(view=await self.build_vending_panel_view(interaction.guild.id))
+        file = gif_file(VENDING_PANEL_GIF)
+        kwargs = {"view": await self.build_vending_panel_view(interaction.guild.id)}
+        if file is not None:
+            kwargs["file"] = file
+        message = await interaction.channel.send(**kwargs)
         await save_panel_location(
             self.repos,
             interaction.guild.id,
@@ -1197,7 +1248,11 @@ class VendingArchiveCog(commands.Cog):
     @app_commands.default_permissions(administrator=True)
     async def archive_panel(self, interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True)
-        message = await interaction.channel.send(view=ArchivePanelView(self))
+        file = gif_file(ARCHIVE_PANEL_GIF)
+        kwargs = {"view": ArchivePanelView(self)}
+        if file is not None:
+            kwargs["file"] = file
+        message = await interaction.channel.send(**kwargs)
         await save_panel_location(
             self.repos,
             interaction.guild.id,

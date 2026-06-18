@@ -123,7 +123,11 @@ class PurchaseCog(commands.Cog):
                 return
 
             message = await channel.fetch_message(message_id)
-            await message.edit(embed=await events_cog.build_ticket_condition_embed(guild))
+            embed = await events_cog.build_ticket_condition_embed(guild)
+            if hasattr(events_cog, "ticket_condition_edit_kwargs"):
+                await message.edit(**events_cog.ticket_condition_edit_kwargs(embed, message))
+            else:
+                await message.edit(embed=embed)
         except discord.HTTPException:
             return
         except Exception:
