@@ -8,7 +8,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands, tasks
 
-from utils.embeds import error_embed, info_embed, success_embed
+from utils.embeds import embed_gif_kwargs, error_embed, info_embed, success_embed
 from utils.panels import restore_panel_message, save_panel_location
 from utils.permissions import deny_ticket_access
 from utils.roles import has_role
@@ -273,7 +273,7 @@ class PurchaseCog(commands.Cog):
         embed.add_field(name="셀러", value=seller.mention, inline=True)
         embed.add_field(name="구매자", value=interaction.user.mention, inline=True)
         embed.add_field(name="입금 계좌", value=account_value[:1024], inline=False)
-        await channel.send(content=f"{interaction.user.mention} {seller.mention}", embed=embed)
+        await channel.send(content=f"{interaction.user.mention} {seller.mention}", **embed_gif_kwargs(embed, "shadow_gate.gif"))
         await interaction.followup.send(embed=success_embed("구매 티켓 생성 완료", channel.mention), ephemeral=True)
 
     async def upgrade_user_grade(self, guild: discord.Guild, member: discord.Member, accrued_spent: int):
@@ -312,6 +312,7 @@ class PurchaseCog(commands.Cog):
                 "purchase_panel_message_id",
                 embed=embed,
                 view=PurchasePanelView(self, sellers),
+                image_attachment_filename="team_sunset.gif",
             )
         except Exception:
             log.exception("Failed to refresh purchase panel: guild_id=%s", guild.id)
@@ -349,7 +350,7 @@ class PurchaseCog(commands.Cog):
             return
 
         embed = info_embed("PURCHASE", "원하는 셀러를 선택하면 개인 구매 티켓이 열립니다.")
-        message = await interaction.channel.send(embed=embed, view=PurchasePanelView(self, sellers))
+        message = await interaction.channel.send(**embed_gif_kwargs(embed, "team_sunset.gif"), view=PurchasePanelView(self, sellers))
         await save_panel_location(
             self.repos,
             interaction.guild.id,
@@ -389,12 +390,11 @@ class PurchaseCog(commands.Cog):
         if seller:
             await deny_ticket_access(channel, seller)
 
-        await channel.send(
-            embed=success_embed(
-                "구매 티켓 종료",
-                f"상품명: {상품명}\n금액: {금액:,}원\n대화 기록을 저장한 뒤 10초 후 채널이 자동 삭제됩니다.",
-            )
+        embed = success_embed(
+            "구매 티켓 종료",
+            f"상품명: {상품명}\n금액: {금액:,}원\n대화 기록을 저장한 뒤 10초 후 채널이 자동 삭제됩니다.",
         )
+        await channel.send(**embed_gif_kwargs(embed, "blue_spark.gif"))
         transcript = await collect_channel_transcript(channel)
         await self.repos.tickets.save_transcript(ticket, transcript)
         await self.repos.tickets.close(
@@ -421,7 +421,7 @@ class PurchaseCog(commands.Cog):
                 seller_label = seller.mention if seller else str(ticket["seller_id"])
                 embed = info_embed("PURCHASE LOG", f"{buyer_label}님 {상품명} 구매 감사합니다!")
                 embed.add_field(name="판매자", value=seller_label, inline=False)
-                await log_channel.send(embed=embed)
+                await log_channel.send(**embed_gif_kwargs(embed, "blue_spark.gif"))
 
         await interaction.followup.send(embed=success_embed("구매 티켓 종료 완료", "10초 후 채널이 삭제됩니다."), ephemeral=True)
         await asyncio.sleep(10)

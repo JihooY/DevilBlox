@@ -4,7 +4,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands, tasks
 
-from utils.embeds import error_embed, info_embed, success_embed
+from utils.embeds import embed_gif_kwargs, error_embed, info_embed, success_embed
 from utils.panels import restore_panel_message, save_panel_location
 from utils.roles import has_role
 
@@ -98,6 +98,7 @@ class AccountCog(commands.Cog):
             "account_panel_message_id",
             embed=info_embed("ACCOUNT INFO", "계정 정보와 보유 쿠폰을 확인할 수 있습니다."),
             view=AccountView(self),
+            image_attachment_filename="blue_room.gif",
         )
 
     @tasks.loop(seconds=1, count=1)
@@ -112,8 +113,9 @@ class AccountCog(commands.Cog):
     @app_commands.command(name="계정패널", description="현재 채널에 계정 정보 패널을 생성합니다.")
     @app_commands.default_permissions(administrator=True)
     async def account_panel(self, interaction: discord.Interaction):
+        embed = info_embed("ACCOUNT INFO", "계정 정보와 보유 쿠폰을 확인할 수 있습니다.")
         message = await interaction.channel.send(
-            embed=info_embed("ACCOUNT INFO", "계정 정보와 보유 쿠폰을 확인할 수 있습니다."),
+            **embed_gif_kwargs(embed, "blue_room.gif"),
             view=AccountView(self),
         )
         await save_panel_location(

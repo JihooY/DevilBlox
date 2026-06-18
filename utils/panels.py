@@ -27,6 +27,7 @@ async def restore_panel_message(
     *,
     embed: discord.Embed | None = None,
     view: discord.ui.View | None = None,
+    image_attachment_filename: str | None = None,
 ) -> bool:
     try:
         settings = await repos.settings.get(guild.id)
@@ -58,6 +59,10 @@ async def restore_panel_message(
 
     update = {}
     if embed is not None:
+        if image_attachment_filename and any(
+            attachment.filename == image_attachment_filename for attachment in message.attachments
+        ):
+            embed.set_image(url=f"attachment://{image_attachment_filename}")
         update["embed"] = embed
     if view is not None:
         update["view"] = view

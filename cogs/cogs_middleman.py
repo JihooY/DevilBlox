@@ -4,7 +4,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands, tasks
 
-from utils.embeds import error_embed, info_embed, success_embed
+from utils.embeds import embed_gif_kwargs, error_embed, info_embed, success_embed
 from utils.panels import restore_panel_message, save_panel_location
 from utils.permissions import deny_ticket_access, move_to_category
 from utils.roles import has_role
@@ -178,6 +178,7 @@ class MiddlemanCog(commands.Cog):
             "middleman_panel_message_id",
             embed=info_embed("MIDDLEMAN SERVICE", "중개 시작 또는 중개자 정보를 확인할 수 있습니다."),
             view=MiddlemanPanelView(self),
+            image_attachment_filename="team_sunset.gif",
         )
 
     @tasks.loop(seconds=1, count=1)
@@ -231,9 +232,10 @@ class MiddlemanCog(commands.Cog):
             counterparty_id=counterparty.id,
             middleman_id=middleman.id,
         )
+        embed = info_embed("MIDDLEMAN SERVICE", "중개 티켓이 시작되었습니다.")
         await channel.send(
             content=f"{interaction.user.mention} {counterparty.mention} {middleman.mention}",
-            embed=info_embed("MIDDLEMAN SERVICE", "중개 티켓이 시작되었습니다."),
+            **embed_gif_kwargs(embed, "aqua_motion.gif"),
         )
         draft_view.open_button.disabled = True
         if draft_view.message:
@@ -249,8 +251,9 @@ class MiddlemanCog(commands.Cog):
     @app_commands.command(name="중개패널", description="현재 채널에 중개 패널을 생성합니다.")
     @app_commands.default_permissions(administrator=True)
     async def middleman_panel(self, interaction: discord.Interaction):
+        embed = info_embed("MIDDLEMAN SERVICE", "중개 시작 또는 중개자 정보를 확인할 수 있습니다.")
         message = await interaction.channel.send(
-            embed=info_embed("MIDDLEMAN SERVICE", "중개 시작 또는 중개자 정보를 확인할 수 있습니다."),
+            **embed_gif_kwargs(embed, "team_sunset.gif"),
             view=MiddlemanPanelView(self),
         )
         await save_panel_location(
@@ -309,7 +312,8 @@ class MiddlemanCog(commands.Cog):
             embed.add_field(name="중개자", value=interaction.user.mention, inline=False)
             await log_channel.send(embed=embed)
 
-        await interaction.channel.send(embed=success_embed("중개 종료", f"금액: {금액:,}원"))
+        embed = success_embed("중개 종료", f"금액: {금액:,}원")
+        await interaction.channel.send(**embed_gif_kwargs(embed, "blue_spark.gif"))
         await interaction.followup.send(embed=success_embed("중개 티켓 종료 완료"), ephemeral=True)
 
 

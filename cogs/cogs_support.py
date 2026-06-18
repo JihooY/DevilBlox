@@ -6,7 +6,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands, tasks
 
-from utils.embeds import error_embed, info_embed, success_embed
+from utils.embeds import embed_gif_kwargs, error_embed, info_embed, success_embed
 from utils.panels import restore_panel_message, save_panel_location
 from utils.permissions import allow_ticket_access, deny_ticket_access
 from utils.roles import has_role
@@ -50,6 +50,7 @@ class SupportCog(commands.Cog):
             "support_panel_message_id",
             embed=info_embed("SUPPORT", "문의를 시작하려면 아래 버튼을 눌러주세요."),
             view=SupportView(self),
+            image_attachment_filename="sunlit_ruins.gif",
         )
 
     @tasks.loop(seconds=1, count=1)
@@ -149,17 +150,19 @@ class SupportCog(commands.Cog):
             reason="DevilBlox support ticket opened",
         )
         await self.repos.tickets.create(guild.id, "support", interaction.user.id, channel.id)
+        embed = info_embed("SUPPORT", f"{interaction.user.mention}님이 문의를 시작했습니다.")
         await channel.send(
             content=f"{interaction.user.mention} {admin_role.mention}",
-            embed=info_embed("SUPPORT", f"{interaction.user.mention}님이 문의를 시작했습니다."),
+            **embed_gif_kwargs(embed, "neon_corridor.gif"),
         )
         await interaction.followup.send(embed=success_embed("문의 티켓 생성 완료", channel.mention), ephemeral=True)
 
     @app_commands.command(name="문의패널", description="현재 채널에 문의 패널을 생성합니다.")
     @app_commands.default_permissions(administrator=True)
     async def support_panel(self, interaction: discord.Interaction):
+        embed = info_embed("SUPPORT", "문의를 시작하려면 아래 버튼을 눌러주세요.")
         message = await interaction.channel.send(
-            embed=info_embed("SUPPORT", "문의를 시작하려면 아래 버튼을 눌러주세요."),
+            **embed_gif_kwargs(embed, "sunlit_ruins.gif"),
             view=SupportView(self),
         )
         await save_panel_location(
@@ -186,7 +189,8 @@ class SupportCog(commands.Cog):
         member = interaction.guild.get_member(ticket["user_id"])
         if member:
             await deny_ticket_access(interaction.channel, member)
-        await interaction.channel.send(embed=success_embed("문의 종료", "대화 기록을 저장한 뒤 10초 후 채널이 자동 삭제됩니다."))
+        embed = success_embed("문의 종료", "대화 기록을 저장한 뒤 10초 후 채널이 자동 삭제됩니다.")
+        await interaction.channel.send(**embed_gif_kwargs(embed, "blue_spark.gif"))
         transcript = await self._collect_transcript(interaction.channel)
         await self.repos.tickets.save_transcript(ticket, transcript)
         await self.repos.tickets.close(interaction.guild.id, interaction.channel_id, closed_by=interaction.user.id)
