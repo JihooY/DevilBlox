@@ -165,28 +165,6 @@ class ProductPurchaseModal(discord.ui.Modal, title="상품 구매"):
         await self.cog.handle_purchase(interaction, str(self.product_id.value))
 
 
-class StockProductRegisterModal(discord.ui.Modal, title="상품 등록"):
-    product_id = discord.ui.TextInput(label="상품 ID", placeholder="예: devil_pack_01", max_length=64)
-    title = discord.ui.TextInput(label="상품명", placeholder="패널에 표시할 상품명", max_length=100)
-    category_id = discord.ui.TextInput(label="카테고리 ID", placeholder="이미 등록된 상품 카테고리 ID", max_length=64)
-    price = discord.ui.TextInput(label="가격", placeholder="예: 10000", max_length=20)
-    terabox_url = discord.ui.TextInput(label="테라박스 링크", placeholder="https://...", max_length=300)
-
-    def __init__(self, cog: "VendingArchiveCog"):
-        super().__init__()
-        self.cog = cog
-
-    async def on_submit(self, interaction: discord.Interaction):
-        await self.cog.handle_stock_product_register(
-            interaction,
-            product_id=str(self.product_id.value),
-            title=str(self.title.value),
-            category_id=str(self.category_id.value),
-            price_text=str(self.price.value),
-            terabox_url=str(self.terabox_url.value),
-        )
-
-
 class ArchiveSearchModal(discord.ui.Modal, title="아카이브 검색"):
     youtube_url = discord.ui.TextInput(
         label="유튜브 URL",
@@ -387,8 +365,7 @@ class ProductSelect(discord.ui.Select):
         for product in products[:25]:
             product_id = product.get("product_id") or product.get("product_id_lower")
             price = int(product.get("price", 0))
-            stock = int(product.get("stock", 0) or 0)
-            description = f"{price:,}원 · 재고 {stock}개 · ID: {product_id}"
+            description = f"{price:,}원 · ID: {product_id}"
             options.append(
                 discord.SelectOption(
                     label=str(product.get("title") or product_id)[:100],
@@ -423,8 +400,7 @@ class ProductMenuView(discord.ui.LayoutView):
         if products:
             lines.append("")
             lines.extend(
-                f"- `{product['product_id']}` · {product.get('title') or product['product_id']} · "
-                f"{int(product.get('price', 0)):,}원 · 재고 {int(product.get('stock', 0) or 0)}개"
+                f"- `{product['product_id']}` · {product.get('title') or product['product_id']} · {int(product.get('price', 0)):,}원"
                 for product in products[:10]
             )
             if len(products) > 10:
@@ -448,7 +424,6 @@ class ProductDetailView(discord.ui.LayoutView):
             "",
             f"상품 ID: `{product['product_id']}`",
             f"가격: `{int(product.get('price', 0)):,}원`",
-            f"재고: `{int(product.get('stock', 0) or 0)}개`",
             f"상품 페이지: {cog.product_thread_mention(product)}",
         ]
         if owned:
@@ -458,9 +433,8 @@ class ProductDetailView(discord.ui.LayoutView):
         container.add_item(discord.ui.TextDisplay("\n".join(lines)))
         container.add_item(discord.ui.Separator())
         buy_button = discord.ui.Button(
-            label="다운로드" if owned else "구매하기" if int(product.get("stock", 0) or 0) > 0 else "품절",
+            label="구매하기" if not owned else "다운로드",
             style=discord.ButtonStyle.success if not owned else discord.ButtonStyle.secondary,
-            disabled=not owned and int(product.get("stock", 0) or 0) <= 0,
         )
         buy_button.callback = self.buy
         detail_buttons = [buy_button]
@@ -507,127 +481,6 @@ class DownloadSelectView(discord.ui.LayoutView):
         container.add_item(discord.ui.Separator())
         container.add_item(discord.ui.ActionRow(DownloadSelect(cog, owned_products)))
         self.add_item(container)
-
-
-class StockProductSelect(discord.ui.Select):
-    def __init__(self, cog: "VendingArchiveCog", products: list[dict], selected_product_id: str | None):
-        self.cog = cog
-        options = []
-        selected_lower = normalize_product_id(selected_product_id or "")
-        for product in products[:25]:
-            product_id = product.get("product_id") or product.get("product_id_lower")
-            product_lower = product.get("product_id_lower") or normalize_product_id(product_id)
-            stock = int(product.get("stock", 0) or 0)
-            price = int(product.get("price", 0) or 0)
-            options.append(
-                discord.SelectOption(
-                    label=str(product.get("title") or product_id)[:100],
-                    value=product_lower,
-                    description=f"재고 {stock}개 · {price:,}원 · ID: {product_id}"[:100],
-                    default=product_lower == selected_lower,
-                )
-            )
-
-        super().__init__(
-            placeholder="재고를 조정할 상품을 선택하세요.",
-            min_values=1,
-            max_values=1,
-            options=options,
-            disabled=not products,
-        )
-
-    async def callback(self, interaction: discord.Interaction):
-        await self.cog.handle_stock_select(interaction, self.values[0])
-
-
-class StockControlView(discord.ui.LayoutView):
-    def __init__(self, cog: "VendingArchiveCog", products: list[dict], selected_product_id: str | None = None):
-        super().__init__(timeout=300)
-        self.cog = cog
-        self.products = products
-        self.selected_product_id = self.resolve_selected_product_id(products, selected_product_id)
-        selected = self.selected_product(products, self.selected_product_id)
-
-        container = discord.ui.Container(accent_color=COLOR_VENDING)
-        container.add_item(discord.ui.TextDisplay(self.build_text(selected, len(products))))
-        container.add_item(discord.ui.Separator())
-        if products:
-            container.add_item(discord.ui.ActionRow(StockProductSelect(cog, products, self.selected_product_id)))
-
-        adjust_buttons = []
-        for label, delta, style in (
-            ("-5", -5, discord.ButtonStyle.danger),
-            ("-1", -1, discord.ButtonStyle.secondary),
-            ("+1", 1, discord.ButtonStyle.success),
-            ("+5", 5, discord.ButtonStyle.success),
-        ):
-            button = discord.ui.Button(label=label, style=style, disabled=selected is None)
-            button.callback = self.adjust_callback(delta)
-            adjust_buttons.append(button)
-        container.add_item(discord.ui.ActionRow(*adjust_buttons))
-
-        register_button = discord.ui.Button(label="상품 등록", style=discord.ButtonStyle.primary)
-        register_button.callback = self.register_product
-        refresh_button = discord.ui.Button(label="새로고침", style=discord.ButtonStyle.secondary)
-        refresh_button.callback = self.refresh
-        container.add_item(discord.ui.ActionRow(register_button, refresh_button))
-        self.add_item(container)
-
-    @staticmethod
-    def resolve_selected_product_id(products: list[dict], selected_product_id: str | None) -> str | None:
-        if not products:
-            return None
-        selected_lower = normalize_product_id(selected_product_id or "")
-        product_lowers = {
-            product.get("product_id_lower") or normalize_product_id(product.get("product_id") or "")
-            for product in products
-        }
-        if selected_lower in product_lowers:
-            return selected_lower
-        first = products[0]
-        return first.get("product_id_lower") or normalize_product_id(first.get("product_id") or "")
-
-    @staticmethod
-    def selected_product(products: list[dict], selected_product_id: str | None) -> dict | None:
-        selected_lower = normalize_product_id(selected_product_id or "")
-        for product in products:
-            product_lower = product.get("product_id_lower") or normalize_product_id(product.get("product_id") or "")
-            if product_lower == selected_lower:
-                return product
-        return None
-
-    @staticmethod
-    def build_text(selected: dict | None, product_count: int) -> str:
-        lines = ["## STOCK CONTROL", f"관리 가능 상품 `{product_count}`개"]
-        if selected is None:
-            lines.append("등록된 상품이 없습니다.")
-            return "\n".join(lines)
-        lines.extend(
-            [
-                "",
-                f"선택 상품: `{selected['product_id']}`",
-                f"상품명: {selected.get('title') or selected['product_id']}",
-                f"가격: `{int(selected.get('price', 0)):,}원`",
-                f"현재 재고: `{int(selected.get('stock', 0) or 0)}개`",
-            ]
-        )
-        return "\n".join(lines)
-
-    def adjust_callback(self, delta: int):
-        async def callback(interaction: discord.Interaction):
-            await self.cog.handle_stock_adjust(interaction, self.selected_product_id, delta)
-
-        return callback
-
-    async def register_product(self, interaction: discord.Interaction):
-        if not await self.cog.staff_allowed(interaction):
-            await interaction.response.defer(ephemeral=True)
-            await interaction.followup.send(embed=error_embed("권한 없음", "셀러 또는 관리자 권한이 필요합니다."), ephemeral=True)
-            return
-        await interaction.response.send_modal(StockProductRegisterModal(self.cog))
-
-    async def refresh(self, interaction: discord.Interaction):
-        await self.cog.handle_stock_select(interaction, self.selected_product_id)
 
 
 class VendingArchiveCog(commands.Cog):
@@ -721,7 +574,6 @@ class VendingArchiveCog(commands.Cog):
         embed = info_embed(product.get("title") or "상품 정보", product.get("description") or None)
         embed.add_field(name="상품 ID", value=f"`{product.get('product_id')}`", inline=True)
         embed.add_field(name="가격", value=f"{int(product.get('price', 0)):,}원", inline=True)
-        embed.add_field(name="재고", value=f"{int(product.get('stock', 0) or 0)}개", inline=True)
         embed.add_field(name="상품 페이지", value=self.product_thread_mention(product), inline=False)
         seller_id = product.get("seller_id")
         if seller_id:
@@ -760,134 +612,6 @@ class VendingArchiveCog(commands.Cog):
             "vending",
             "vending_panel_message_id",
             await self.build_vending_panel_view(guild.id),
-        )
-
-    async def stock_products_for(self, interaction: discord.Interaction) -> list[dict]:
-        if await self.admin_allowed(interaction):
-            return await self.repos.products.list_active(interaction.guild.id)
-        return await self.repos.products.list_for_seller(interaction.guild.id, interaction.user.id)
-
-    async def build_stock_control_view(
-        self,
-        interaction: discord.Interaction,
-        selected_product_id: str | None = None,
-    ) -> StockControlView:
-        products = await self.stock_products_for(interaction)
-        return StockControlView(self, products, selected_product_id)
-
-    async def handle_stock_select(self, interaction: discord.Interaction, selected_product_id: str | None):
-        await interaction.response.defer()
-        if not interaction.guild:
-            await interaction.followup.send(embed=error_embed("처리 실패", "서버 안에서만 사용할 수 있습니다."), ephemeral=True)
-            return
-        if not await self.staff_allowed(interaction):
-            await interaction.followup.send(embed=error_embed("권한 없음", "셀러 또는 관리자 권한이 필요합니다."), ephemeral=True)
-            return
-
-        view = await self.build_stock_control_view(interaction, selected_product_id)
-        try:
-            await interaction.edit_original_response(view=view)
-        except discord.HTTPException:
-            if interaction.message is not None:
-                try:
-                    await interaction.message.edit(view=view)
-                except discord.HTTPException:
-                    pass
-        await interaction.followup.send(embed=success_embed("재고 패널 갱신 완료"), ephemeral=True)
-
-    async def handle_stock_adjust(self, interaction: discord.Interaction, product_id: str | None, delta: int):
-        await interaction.response.defer()
-        if not interaction.guild:
-            await interaction.followup.send(embed=error_embed("처리 실패", "서버 안에서만 사용할 수 있습니다."), ephemeral=True)
-            return
-        if not await self.staff_allowed(interaction):
-            await interaction.followup.send(embed=error_embed("권한 없음", "셀러 또는 관리자 권한이 필요합니다."), ephemeral=True)
-            return
-        if not product_id:
-            await interaction.followup.send(embed=error_embed("상품 없음", "먼저 상품을 등록해주세요."), ephemeral=True)
-            return
-
-        product = await self.repos.products.get(interaction.guild.id, product_id)
-        if product is None:
-            await interaction.followup.send(embed=error_embed("상품 없음", "선택한 상품을 찾을 수 없습니다."), ephemeral=True)
-            return
-        if not await self.admin_allowed(interaction) and product.get("seller_id") != interaction.user.id:
-            await interaction.followup.send(embed=error_embed("권한 없음", "본인 상품의 재고만 조정할 수 있습니다."), ephemeral=True)
-            return
-
-        updated = await self.repos.products.adjust_stock(interaction.guild.id, product["product_id"], delta)
-        if updated is None:
-            await interaction.followup.send(embed=error_embed("재고 부족", "재고는 0개 아래로 내릴 수 없습니다."), ephemeral=True)
-            return
-
-        view = await self.build_stock_control_view(interaction, updated["product_id"])
-        try:
-            await interaction.edit_original_response(view=view)
-        except discord.HTTPException:
-            if interaction.message is not None:
-                try:
-                    await interaction.message.edit(view=view)
-                except discord.HTTPException:
-                    pass
-        await interaction.followup.send(
-            embed=success_embed("재고 변경 완료", f"`{updated['product_id']}` 현재 재고: {int(updated.get('stock', 0) or 0)}개"),
-            ephemeral=True,
-        )
-
-    async def handle_stock_product_register(
-        self,
-        interaction: discord.Interaction,
-        *,
-        product_id: str,
-        title: str,
-        category_id: str,
-        price_text: str,
-        terabox_url: str,
-    ):
-        await interaction.response.defer(ephemeral=True)
-        if not interaction.guild:
-            await interaction.followup.send(embed=error_embed("처리 실패", "서버 안에서만 사용할 수 있습니다."), ephemeral=True)
-            return
-        if not await self.staff_allowed(interaction):
-            await interaction.followup.send(embed=error_embed("권한 없음", "셀러 또는 관리자 권한이 필요합니다."), ephemeral=True)
-            return
-        if not product_id.strip() or len(product_id.strip()) > 64:
-            await interaction.followup.send(embed=error_embed("상품 ID 오류", "상품 ID는 1~64자로 입력해주세요."), ephemeral=True)
-            return
-        digits = re.sub(r"[^\d]", "", price_text)
-        if not digits:
-            await interaction.followup.send(embed=error_embed("가격 오류", "가격은 0원 이상 숫자로 입력해주세요."), ephemeral=True)
-            return
-        price = int(digits)
-        if not is_http_url(terabox_url):
-            await interaction.followup.send(embed=error_embed("링크 오류", "테라박스 링크는 http 또는 https URL이어야 합니다."), ephemeral=True)
-            return
-
-        category = await self.repos.product_categories.get(interaction.guild.id, category_id)
-        if category is None:
-            await interaction.followup.send(embed=error_embed("카테고리 없음", "먼저 상품 카테고리를 등록해주세요."), ephemeral=True)
-            return
-
-        seller_member = None if await self.admin_allowed(interaction) else interaction.user
-        seller_id = seller_member.id if isinstance(seller_member, discord.Member) else None
-        if seller_member is not None:
-            await self.repos.sellers.upsert(interaction.guild.id, seller_member.id, seller_member.display_name)
-
-        product = await self.repos.products.upsert(
-            interaction.guild.id,
-            product_id,
-            title=title,
-            price=price,
-            terabox_url=terabox_url,
-            category_id=category["category_id"],
-            seller_id=seller_id,
-            stock=None,
-            created_by=interaction.user.id,
-        )
-        await self.refresh_vending_panel(interaction.guild)
-        await interaction.followup.send(
-            embed=success_embed("상품 등록 완료", f"`{product['product_id']}` 재고는 패널 버튼으로 조정할 수 있습니다."),
-            ephemeral=True,
         )
 
     def build_charge_embed(
@@ -1293,10 +1017,6 @@ class VendingArchiveCog(commands.Cog):
             await interaction.followup.send(embed=self.build_download_embed(product), ephemeral=True)
             return
 
-        if int(product.get("stock", 0) or 0) <= 0:
-            await interaction.followup.send(embed=error_embed("품절", "현재 구매 가능한 재고가 없습니다."), ephemeral=True)
-            return
-
         reserved = await self.repos.vending.reserve_product(interaction.guild.id, interaction.user.id, product)
         if not reserved:
             if await self.repos.vending.owns_product(interaction.guild.id, interaction.user.id, product_id):
@@ -1308,16 +1028,9 @@ class VendingArchiveCog(commands.Cog):
                 )
             return
 
-        stocked = await self.repos.products.adjust_stock(interaction.guild.id, product["product_id"], -1)
-        if stocked is None:
-            await self.repos.vending.release_product_reservation(interaction.guild.id, interaction.user.id, product_id)
-            await interaction.followup.send(embed=error_embed("품절", "방금 재고가 소진되었습니다."), ephemeral=True)
-            return
-
         price = int(product.get("price", 0))
         spent = await self.repos.users.spend_cash(interaction.guild.id, interaction.user.id, price)
         if spent is None:
-            await self.repos.products.adjust_stock(interaction.guild.id, product["product_id"], 1)
             await self.repos.vending.release_product_reservation(interaction.guild.id, interaction.user.id, product_id)
             user = await self.repos.users.ensure_user(interaction.guild.id, interaction.user.id)
             await interaction.followup.send(
@@ -1480,15 +1193,6 @@ class VendingArchiveCog(commands.Cog):
         )
         await interaction.followup.send(embed=success_embed("자판기 패널 생성 완료"), ephemeral=True)
 
-    @app_commands.command(name="재고패널", description="상품 재고를 버튼으로 조정하고 새 상품을 등록합니다.")
-    @app_commands.default_permissions(send_messages=True)
-    async def stock_panel(self, interaction: discord.Interaction):
-        await interaction.response.defer(ephemeral=True)
-        if not await self.staff_allowed(interaction):
-            await interaction.followup.send(embed=error_embed("권한 없음", "셀러 또는 관리자 권한이 필요합니다."), ephemeral=True)
-            return
-        await interaction.followup.send(view=await self.build_stock_control_view(interaction), ephemeral=True)
-
     @app_commands.command(name="아카이브패널", description="현재 채널에 아카이브 검색 패널을 생성합니다.")
     @app_commands.default_permissions(administrator=True)
     async def archive_panel(self, interaction: discord.Interaction):
@@ -1594,7 +1298,6 @@ class VendingArchiveCog(commands.Cog):
         description="상품 설명 요약",
         thread_id="상품 설명 쓰레드 ID 또는 멘션",
         page_url="상품 설명 페이지 URL",
-        stock="초기 재고. 비우면 기존 재고를 유지하고 새 상품은 0개로 시작합니다.",
         seller="상품 셀러",
     )
     async def register_product(
@@ -1608,7 +1311,6 @@ class VendingArchiveCog(commands.Cog):
         description: str = "",
         thread_id: str = "",
         page_url: str = "",
-        stock: int | None = None,
         seller: discord.Member | None = None,
     ):
         await interaction.response.defer(ephemeral=True)
@@ -1620,9 +1322,6 @@ class VendingArchiveCog(commands.Cog):
             return
         if price < 0:
             await interaction.followup.send(embed=error_embed("가격 오류", "가격은 0원 이상이어야 합니다."), ephemeral=True)
-            return
-        if stock is not None and stock < 0:
-            await interaction.followup.send(embed=error_embed("재고 오류", "재고는 0개 이상이어야 합니다."), ephemeral=True)
             return
         if not is_http_url(terabox_url):
             await interaction.followup.send(embed=error_embed("링크 오류", "테라박스 링크는 http 또는 https URL이어야 합니다."), ephemeral=True)
@@ -1661,15 +1360,11 @@ class VendingArchiveCog(commands.Cog):
             category_id=category["category_id"],
             thread_id=parse_discord_id(thread_id),
             page_url=page_url,
-            stock=stock,
             created_by=interaction.user.id,
         )
         await self.refresh_vending_panel(interaction.guild)
         await interaction.followup.send(
-            embed=success_embed(
-                "상품 등록 완료",
-                f"`{product['product_id']}` -> {category['name']} · 재고 {int(product.get('stock', 0) or 0)}개",
-            ),
+            embed=success_embed("상품 등록 완료", f"`{product['product_id']}` -> {category['name']}"),
             ephemeral=True,
         )
 
