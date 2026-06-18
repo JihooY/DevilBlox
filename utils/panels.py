@@ -4,6 +4,8 @@ import logging
 
 import discord
 
+from utils.assets import asset_path, has_asset
+
 log = logging.getLogger(__name__)
 
 
@@ -59,10 +61,15 @@ async def restore_panel_message(
 
     update = {}
     if embed is not None:
-        if image_attachment_filename and any(
-            attachment.filename == image_attachment_filename for attachment in message.attachments
-        ):
+        if image_attachment_filename and has_asset("gifs", image_attachment_filename):
             embed.set_image(url=f"attachment://{image_attachment_filename}")
+            if not any(attachment.filename == image_attachment_filename for attachment in message.attachments):
+                update["attachments"] = [
+                    discord.File(
+                        str(asset_path("gifs", image_attachment_filename)),
+                        filename=image_attachment_filename,
+                    )
+                ]
         update["embed"] = embed
     if view is not None:
         update["view"] = view

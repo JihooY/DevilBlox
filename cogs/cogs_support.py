@@ -138,17 +138,17 @@ class SupportCog(commands.Cog):
             await interaction.followup.send(embed=error_embed("설정 오류", "관리자 역할을 먼저 설정해주세요."), ephemeral=True)
             return
 
-        overwrites = {
-            guild.default_role: discord.PermissionOverwrite(view_channel=False),
-            interaction.user: discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True),
-            admin_role: discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True),
-        }
         channel = await guild.create_text_channel(
             name=safe_channel_name("문의", interaction.user.display_name),
             category=category if isinstance(category, discord.CategoryChannel) else None,
-            overwrites=overwrites,
+            overwrites={guild.default_role: discord.PermissionOverwrite(view_channel=False)},
             reason="DevilBlox support ticket opened",
         )
+        await deny_ticket_access(channel, guild.default_role)
+        await allow_ticket_access(channel, interaction.user)
+        await allow_ticket_access(channel, admin_role)
+        if guild.me is not None:
+            await allow_ticket_access(channel, guild.me)
         await self.repos.tickets.create(guild.id, "support", interaction.user.id, channel.id)
         embed = info_embed("SUPPORT", f"{interaction.user.mention}님이 문의를 시작했습니다.")
         await channel.send(
@@ -190,7 +190,7 @@ class SupportCog(commands.Cog):
         if member:
             await deny_ticket_access(interaction.channel, member)
         embed = success_embed("문의 종료", "대화 기록을 저장한 뒤 10초 후 채널이 자동 삭제됩니다.")
-        await interaction.channel.send(**embed_gif_kwargs(embed, "blue_spark.gif"))
+        await interaction.channel.send(**embed_gif_kwargs(embed, "moon_rabbit.gif"))
         transcript = await self._collect_transcript(interaction.channel)
         await self.repos.tickets.save_transcript(ticket, transcript)
         await self.repos.tickets.close(interaction.guild.id, interaction.channel_id, closed_by=interaction.user.id)

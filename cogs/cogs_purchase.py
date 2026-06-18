@@ -10,7 +10,7 @@ from discord.ext import commands, tasks
 
 from utils.embeds import embed_gif_kwargs, error_embed, info_embed, success_embed
 from utils.panels import restore_panel_message, save_panel_location
-from utils.permissions import deny_ticket_access
+from utils.permissions import allow_ticket_access, deny_ticket_access
 from utils.roles import has_role
 from utils.tickets import collect_channel_transcript, safe_channel_name
 
@@ -210,52 +210,20 @@ class PurchaseCog(commands.Cog):
             await interaction.followup.send(embed=error_embed("셀러 오류", "셀러 멤버를 찾을 수 없습니다."), ephemeral=True)
             return
 
-        overwrites = {
-            guild.default_role: discord.PermissionOverwrite(view_channel=False),
-            interaction.user: discord.PermissionOverwrite(
-                view_channel=True,
-                send_messages=True,
-                read_message_history=True,
-                embed_links=True,
-                attach_files=True,
-                use_application_commands=True,
-            ),
-            seller: discord.PermissionOverwrite(
-                view_channel=True,
-                send_messages=True,
-                read_message_history=True,
-                embed_links=True,
-                attach_files=True,
-                use_application_commands=True,
-            ),
-        }
         admin_role = guild.get_role(settings["roles"].get("admin") or 0)
-        if admin_role is not None:
-            overwrites[admin_role] = discord.PermissionOverwrite(
-                view_channel=True,
-                send_messages=True,
-                read_message_history=True,
-                embed_links=True,
-                attach_files=True,
-                use_application_commands=True,
-            )
-        if guild.me is not None:
-            overwrites[guild.me] = discord.PermissionOverwrite(
-                view_channel=True,
-                send_messages=True,
-                read_message_history=True,
-                embed_links=True,
-                attach_files=True,
-                manage_channels=True,
-                use_application_commands=True,
-            )
-
         channel = await guild.create_text_channel(
             name=safe_channel_name("구매", interaction.user.display_name, seller.display_name),
             category=category if isinstance(category, discord.CategoryChannel) else None,
-            overwrites=overwrites,
+            overwrites={guild.default_role: discord.PermissionOverwrite(view_channel=False)},
             reason="DevilBlox purchase ticket opened",
         )
+        await deny_ticket_access(channel, guild.default_role)
+        await allow_ticket_access(channel, interaction.user)
+        await allow_ticket_access(channel, seller)
+        if admin_role is not None:
+            await allow_ticket_access(channel, admin_role)
+        if guild.me is not None:
+            await allow_ticket_access(channel, guild.me)
         await self.repos.tickets.create(
             guild.id,
             "purchase",
@@ -312,7 +280,7 @@ class PurchaseCog(commands.Cog):
                 "purchase_panel_message_id",
                 embed=embed,
                 view=PurchasePanelView(self, sellers),
-                image_attachment_filename="team_sunset.gif",
+                image_attachment_filename="city_bridge.gif",
             )
         except Exception:
             log.exception("Failed to refresh purchase panel: guild_id=%s", guild.id)
@@ -331,8 +299,9 @@ class PurchaseCog(commands.Cog):
     async def register_seller(self, interaction: discord.Interaction, 셀러: discord.Member):
         await interaction.response.defer(ephemeral=True)
         await self.repos.sellers.upsert(interaction.guild.id, 셀러.id, 셀러.display_name)
+        embed = success_embed("셀러 등록 완료", f"{셀러.mention}")
         await interaction.followup.send(
-            embed=success_embed("셀러 등록 완료", f"{셀러.mention}"),
+            **embed_gif_kwargs(embed, "candy_room.gif"),
             ephemeral=True,
         )
         await self.refresh_purchase_panel(interaction.guild)
@@ -350,7 +319,7 @@ class PurchaseCog(commands.Cog):
             return
 
         embed = info_embed("PURCHASE", "원하는 셀러를 선택하면 개인 구매 티켓이 열립니다.")
-        message = await interaction.channel.send(**embed_gif_kwargs(embed, "team_sunset.gif"), view=PurchasePanelView(self, sellers))
+        message = await interaction.channel.send(**embed_gif_kwargs(embed, "city_bridge.gif"), view=PurchasePanelView(self, sellers))
         await save_panel_location(
             self.repos,
             interaction.guild.id,
@@ -447,9 +416,34 @@ class PurchaseCog(commands.Cog):
         disabled = 상태.value == "off"
         await self.repos.sellers.set_ticket_state(interaction.guild.id, interaction.user.id, disabled, 사유)
         await self.refresh_purchase_panel(interaction.guild)
+        await self.send_ticket_state_log(interaction, disabled, 사유)
         await interaction.followup.send(
             embed=success_embed("티켓 상태 변경", "비활성화" if disabled else "활성화"),
             ephemeral=True,
+        )
+
+    async def send_ticket_state_log(self, interaction: discord.Interaction, disabled: bool, reason: str):
+        settings = await self.repos.settings.get(interaction.guild.id)
+        channel_id = settings["channels"].get("ticket_state_log") or settings["channels"].get("ticket_condition")
+        channel = interaction.guild.get_channel(channel_id or 0)
+        if channel is None:
+            return
+
+        mention_role = interaction.guild.get_role(settings["roles"].get("alarm_seller") or 0)
+        state = "비활성화" if disabled else "활성화"
+        embed = error_embed("TICKET STATE", f"{interaction.user.mention} 셀러 티켓이 {state}되었습니다.")
+        if not disabled:
+            embed = success_embed("TICKET STATE", f"{interaction.user.mention} 셀러 티켓이 {state}되었습니다.")
+        embed.add_field(name="셀러", value=f"{interaction.user.mention} (`{interaction.user.id}`)", inline=False)
+        embed.add_field(name="상태", value=state, inline=True)
+        embed.add_field(name="처리자", value=interaction.user.mention, inline=True)
+        if reason.strip():
+            embed.add_field(name="사유", value=reason.strip()[:1024], inline=False)
+
+        await channel.send(
+            content=mention_role.mention if mention_role else None,
+            **embed_gif_kwargs(embed, "card_bite.gif"),
+            allowed_mentions=discord.AllowedMentions(roles=True, users=False, everyone=False),
         )
 
     @app_commands.command(name="계좌등록", description="구매 티켓에 자동 표시할 셀러 계좌를 등록하거나 수정합니다.")
@@ -480,8 +474,9 @@ class PurchaseCog(commands.Cog):
 
         await self.repos.sellers.upsert(interaction.guild.id, target.id, target.display_name)
         await self.repos.sellers.set_payment_account(interaction.guild.id, target.id, 계좌정보)
+        embed = success_embed("계좌 등록 완료", f"{target.mention} 티켓에 자동 표시됩니다.")
         await interaction.followup.send(
-            embed=success_embed("계좌 등록 완료", f"{target.mention} 티켓에 자동 표시됩니다."),
+            **embed_gif_kwargs(embed, "bubble_bath.gif"),
             ephemeral=True,
         )
 

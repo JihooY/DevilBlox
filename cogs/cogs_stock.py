@@ -9,11 +9,26 @@ from discord import app_commands
 from discord.ext import commands, tasks
 
 from database.stock import normalize_stock_id
+from utils.assets import asset_path, has_asset
 from utils.embeds import embed_gif_kwargs, error_embed, info_embed, success_embed
 from utils.panels import save_panel_location
 from utils.roles import has_role
 
 log = logging.getLogger(__name__)
+
+
+def embed_panel_image_update(
+    embed: discord.Embed,
+    message: discord.Message,
+    filename: str,
+) -> dict:
+    update = {"embed": embed}
+    if not has_asset("gifs", filename):
+        return update
+    embed.set_image(url=f"attachment://{filename}")
+    if not any(attachment.filename == filename for attachment in message.attachments):
+        update["attachments"] = [discord.File(str(asset_path("gifs", filename)), filename=filename)]
+    return update
 
 
 def parse_quantity(value: str) -> int | None:
@@ -290,9 +305,7 @@ class StockCog(commands.Cog):
             message = await channel.fetch_message(message_id)
             await self.repos.settings.set_value(guild.id, "meta", "stock_condition_reset_at", reset_at)
             embed = await self.build_stock_condition_embed(guild, reset_at=reset_at)
-            if any(attachment.filename == "red_alert.gif" for attachment in message.attachments):
-                embed.set_image(url="attachment://red_alert.gif")
-            await message.edit(embed=embed)
+            await message.edit(**embed_panel_image_update(embed, message, "golden_eclipse.gif"))
         except discord.NotFound:
             await self.repos.settings.set_value(guild.id, "meta", "stock_condition_message_id", None)
         except discord.HTTPException:
@@ -310,9 +323,9 @@ class StockCog(commands.Cog):
         try:
             message = await channel.fetch_message(message_id)
             embed, view = await self.build_stock_control_payload(guild, selected_item_id)
-            if any(attachment.filename == "blue_room.gif" for attachment in message.attachments):
-                embed.set_image(url="attachment://blue_room.gif")
-            await message.edit(embed=embed, view=view)
+            update = embed_panel_image_update(embed, message, "blue_room.gif")
+            update["view"] = view
+            await message.edit(**update)
         except discord.NotFound:
             await self.repos.settings.set_value(guild.id, "meta", "stock_control_message_id", None)
         except discord.HTTPException:
@@ -455,7 +468,7 @@ class StockCog(commands.Cog):
         await interaction.response.defer(ephemeral=True)
         reset_at = int(time.time())
         embed = await self.build_stock_condition_embed(interaction.guild, reset_at=reset_at)
-        message = await interaction.channel.send(**embed_gif_kwargs(embed, "red_alert.gif"))
+        message = await interaction.channel.send(**embed_gif_kwargs(embed, "golden_eclipse.gif"))
         await save_panel_location(
             self.repos,
             interaction.guild.id,

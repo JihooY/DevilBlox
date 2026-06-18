@@ -178,7 +178,7 @@ class MiddlemanCog(commands.Cog):
             "middleman_panel_message_id",
             embed=info_embed("MIDDLEMAN SERVICE", "중개 시작 또는 중개자 정보를 확인할 수 있습니다."),
             view=MiddlemanPanelView(self),
-            image_attachment_filename="team_sunset.gif",
+            image_attachment_filename="torii_glow.gif",
         )
 
     @tasks.loop(seconds=1, count=1)
@@ -253,7 +253,7 @@ class MiddlemanCog(commands.Cog):
     async def middleman_panel(self, interaction: discord.Interaction):
         embed = info_embed("MIDDLEMAN SERVICE", "중개 시작 또는 중개자 정보를 확인할 수 있습니다.")
         message = await interaction.channel.send(
-            **embed_gif_kwargs(embed, "team_sunset.gif"),
+            **embed_gif_kwargs(embed, "torii_glow.gif"),
             view=MiddlemanPanelView(self),
         )
         await save_panel_location(

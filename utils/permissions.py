@@ -5,7 +5,7 @@ import discord
 
 async def allow_ticket_access(channel: discord.TextChannel, target: discord.Member | discord.Role):
     overwrite = discord.PermissionOverwrite(
-        read_messages=True,
+        view_channel=True,
         read_message_history=True,
         send_messages=True,
         embed_links=True,
@@ -17,7 +17,7 @@ async def allow_ticket_access(channel: discord.TextChannel, target: discord.Memb
 
 async def deny_ticket_access(channel: discord.TextChannel, target: discord.Member | discord.Role):
     overwrite = discord.PermissionOverwrite(
-        read_messages=False,
+        view_channel=False,
         read_message_history=False,
         send_messages=False,
         embed_links=False,
