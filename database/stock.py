@@ -91,3 +91,11 @@ class StockStore:
             {"$inc": {"quantity": delta}, "$set": {"updated_at": _now()}},
             return_document=ReturnDocument.AFTER,
         )
+
+    async def deactivate(self, guild_id: int, item_id: str, deleted_by: int | None = None):
+        update = {"active": False, "deleted_by": deleted_by, "updated_at": _now()}
+        return await self.collection.find_one_and_update(
+            {"_id": stock_key(guild_id, item_id), "active": True},
+            {"$set": update},
+            return_document=ReturnDocument.AFTER,
+        )

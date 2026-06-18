@@ -23,6 +23,16 @@ def parse_quantity(value: str) -> int | None:
     return int(digits)
 
 
+def parse_signed_quantity(value: str) -> int | None:
+    normalized = re.sub(r"[\s,]", "", value.strip())
+    if not normalized:
+        return None
+    if not re.fullmatch(r"[+-]?\d+", normalized):
+        return None
+    amount = int(normalized)
+    return amount if amount != 0 else None
+
+
 class StockRegisterModal(discord.ui.Modal, title="재고 상품 등록"):
     item_id = discord.ui.TextInput(label="상품 ID", placeholder="예: devil_pack_01", max_length=64)
     name = discord.ui.TextInput(label="상품명", placeholder="현황 패널에 표시할 이름", max_length=100)
@@ -38,6 +48,22 @@ class StockRegisterModal(discord.ui.Modal, title="재고 상품 등록"):
             item_id=str(self.item_id.value),
             name=str(self.name.value),
             quantity_text=str(self.quantity.value),
+        )
+
+
+class StockAdjustModal(discord.ui.Modal, title="재고 수량 지정"):
+    amount = discord.ui.TextInput(label="변경 수량", placeholder="예: +10 또는 -5", max_length=12)
+
+    def __init__(self, cog: "StockCog", item_id: str):
+        super().__init__()
+        self.cog = cog
+        self.item_id = item_id
+
+    async def on_submit(self, interaction: discord.Interaction):
+        await self.cog.handle_adjust_submit(
+            interaction,
+            item_id=self.item_id,
+            amount_text=str(self.amount.value),
         )
 
 
@@ -72,7 +98,7 @@ class StockItemSelect(discord.ui.Select):
 
     async def callback(self, interaction: discord.Interaction):
         if self.values[0] == "none":
-            await interaction.response.defer()
+            await interaction.response.defer(ephemeral=True)
             return
         await self.cog.handle_control_select(interaction, self.values[0])
 
@@ -96,6 +122,15 @@ class StockControlView(discord.ui.View):
             button.callback = self.adjust_callback(delta)
             self.add_item(button)
 
+        adjust_button = discord.ui.Button(
+            label="수량 지정",
+            style=discord.ButtonStyle.primary,
+            custom_id="devilblox:stock:control:adjust",
+            disabled=selected is None,
+        )
+        adjust_button.callback = self.adjust_custom
+        self.add_item(adjust_button)
+
         register_button = discord.ui.Button(
             label="상품 등록",
             style=discord.ButtonStyle.primary,
@@ -103,6 +138,15 @@ class StockControlView(discord.ui.View):
         )
         register_button.callback = self.register_item
         self.add_item(register_button)
+
+        delete_button = discord.ui.Button(
+            label="상품 삭제",
+            style=discord.ButtonStyle.danger,
+            custom_id="devilblox:stock:control:delete",
+            disabled=selected is None,
+        )
+        delete_button.callback = self.delete_item
+        self.add_item(delete_button)
 
         refresh_button = discord.ui.Button(
             label="새로고침",
@@ -138,11 +182,32 @@ class StockControlView(discord.ui.View):
 
         return callback
 
+    async def adjust_custom(self, interaction: discord.Interaction):
+        if not await self.cog.staff_allowed(interaction):
+            await interaction.response.send_message(
+                embed=error_embed("권한 없음", "셀러 또는 관리자 권한이 필요합니다."),
+                ephemeral=True,
+            )
+            return
+        if not self.selected_item_id:
+            await interaction.response.send_message(
+                embed=error_embed("상품 없음", "수량을 조정할 상품을 먼저 선택해주세요."),
+                ephemeral=True,
+            )
+            return
+        await interaction.response.send_modal(StockAdjustModal(self.cog, self.selected_item_id))
+
     async def register_item(self, interaction: discord.Interaction):
         if not await self.cog.staff_allowed(interaction):
-            await interaction.response.send_message(embed=error_embed("권한 없음", "셀러 또는 관리자 권한이 필요합니다."))
+            await interaction.response.send_message(
+                embed=error_embed("권한 없음", "셀러 또는 관리자 권한이 필요합니다."),
+                ephemeral=True,
+            )
             return
         await interaction.response.send_modal(StockRegisterModal(self.cog))
+
+    async def delete_item(self, interaction: discord.Interaction):
+        await self.cog.handle_delete(interaction, self.selected_item_id)
 
     async def refresh(self, interaction: discord.Interaction):
         await self.cog.handle_control_select(interaction, self.selected_item_id)
@@ -256,31 +321,66 @@ class StockCog(commands.Cog):
         await self.refresh_stock_control_panel(interaction.guild, selected_item_id)
 
     async def handle_control_select(self, interaction: discord.Interaction, selected_item_id: str | None):
-        await interaction.response.defer()
+        await interaction.response.defer(ephemeral=True)
         if not interaction.guild:
-            await interaction.followup.send(embed=error_embed("처리 실패", "서버 안에서만 사용할 수 있습니다."))
+            await interaction.followup.send(embed=error_embed("처리 실패", "서버 안에서만 사용할 수 있습니다."), ephemeral=True)
             return
         await self.update_control_message(interaction, selected_item_id)
 
     async def handle_adjust(self, interaction: discord.Interaction, item_id: str | None, delta: int):
-        await interaction.response.defer()
+        await interaction.response.defer(ephemeral=True)
+        await self.apply_adjust(interaction, item_id, delta)
+
+    async def handle_adjust_submit(self, interaction: discord.Interaction, *, item_id: str, amount_text: str):
+        await interaction.response.defer(ephemeral=True)
+        delta = parse_signed_quantity(amount_text)
+        if delta is None:
+            await interaction.followup.send(embed=error_embed("수량 오류", "`+10`, `-5`처럼 0이 아닌 숫자로 입력해주세요."), ephemeral=True)
+            return
+        await self.apply_adjust(interaction, item_id, delta)
+
+    async def apply_adjust(self, interaction: discord.Interaction, item_id: str | None, delta: int):
         if not interaction.guild:
-            await interaction.followup.send(embed=error_embed("처리 실패", "서버 안에서만 사용할 수 있습니다."))
+            await interaction.followup.send(embed=error_embed("처리 실패", "서버 안에서만 사용할 수 있습니다."), ephemeral=True)
             return
         if not await self.staff_allowed(interaction):
-            await interaction.followup.send(embed=error_embed("권한 없음", "셀러 또는 관리자 권한이 필요합니다."))
+            await interaction.followup.send(embed=error_embed("권한 없음", "셀러 또는 관리자 권한이 필요합니다."), ephemeral=True)
             return
         if not item_id:
-            await interaction.followup.send(embed=error_embed("상품 없음", "먼저 상품을 등록해주세요."))
+            await interaction.followup.send(embed=error_embed("상품 없음", "먼저 상품을 등록해주세요."), ephemeral=True)
             return
 
         updated = await self.repos.stock.adjust_quantity(interaction.guild.id, item_id, delta)
         if updated is None:
-            await interaction.followup.send(embed=error_embed("재고 부족", "재고는 0개 아래로 내릴 수 없습니다."))
+            await interaction.followup.send(embed=error_embed("재고 부족", "재고는 0개 아래로 내릴 수 없습니다."), ephemeral=True)
             return
 
         await self.update_control_message(interaction, updated["item_id"])
         await self.refresh_stock_condition_panel(interaction.guild)
+
+    async def handle_delete(self, interaction: discord.Interaction, item_id: str | None):
+        await interaction.response.defer(ephemeral=True)
+        if not interaction.guild:
+            await interaction.followup.send(embed=error_embed("처리 실패", "서버 안에서만 사용할 수 있습니다."), ephemeral=True)
+            return
+        if not await self.staff_allowed(interaction):
+            await interaction.followup.send(embed=error_embed("권한 없음", "셀러 또는 관리자 권한이 필요합니다."), ephemeral=True)
+            return
+        if not item_id:
+            await interaction.followup.send(embed=error_embed("상품 없음", "삭제할 상품을 먼저 선택해주세요."), ephemeral=True)
+            return
+
+        deleted = await self.repos.stock.deactivate(interaction.guild.id, item_id, interaction.user.id)
+        if deleted is None:
+            await interaction.followup.send(embed=error_embed("상품 없음", "이미 삭제되었거나 찾을 수 없는 상품입니다."), ephemeral=True)
+            return
+
+        await self.update_control_message(interaction)
+        await self.refresh_stock_condition_panel(interaction.guild)
+        await interaction.followup.send(
+            embed=success_embed("재고 상품 삭제 완료", f"`{deleted['item_id']}`가 목록에서 제거되었습니다."),
+            ephemeral=True,
+        )
 
     async def handle_register_submit(
         self,
@@ -290,19 +390,19 @@ class StockCog(commands.Cog):
         name: str,
         quantity_text: str,
     ):
-        await interaction.response.defer()
+        await interaction.response.defer(ephemeral=True)
         if not interaction.guild:
-            await interaction.followup.send(embed=error_embed("처리 실패", "서버 안에서만 사용할 수 있습니다."))
+            await interaction.followup.send(embed=error_embed("처리 실패", "서버 안에서만 사용할 수 있습니다."), ephemeral=True)
             return
         if not await self.staff_allowed(interaction):
-            await interaction.followup.send(embed=error_embed("권한 없음", "셀러 또는 관리자 권한이 필요합니다."))
+            await interaction.followup.send(embed=error_embed("권한 없음", "셀러 또는 관리자 권한이 필요합니다."), ephemeral=True)
             return
         if not item_id.strip() or len(item_id.strip()) > 64:
-            await interaction.followup.send(embed=error_embed("상품 ID 오류", "상품 ID는 1~64자로 입력해주세요."))
+            await interaction.followup.send(embed=error_embed("상품 ID 오류", "상품 ID는 1~64자로 입력해주세요."), ephemeral=True)
             return
         quantity = parse_quantity(quantity_text)
         if quantity is None:
-            await interaction.followup.send(embed=error_embed("수량 오류", "수량은 0 이상의 숫자로 입력해주세요."))
+            await interaction.followup.send(embed=error_embed("수량 오류", "수량은 0 이상의 숫자로 입력해주세요."), ephemeral=True)
             return
 
         item = await self.repos.stock.upsert(
@@ -314,7 +414,10 @@ class StockCog(commands.Cog):
         )
         await self.refresh_stock_control_panel(interaction.guild, item["item_id"])
         await self.refresh_stock_condition_panel(interaction.guild)
-        await interaction.followup.send(embed=success_embed("재고 상품 등록 완료", f"`{item['item_id']}`: {int(item.get('quantity', 0) or 0)}개"))
+        await interaction.followup.send(
+            embed=success_embed("재고 상품 등록 완료", f"`{item['item_id']}`: {int(item.get('quantity', 0) or 0)}개"),
+            ephemeral=True,
+        )
 
     @tasks.loop(minutes=1)
     async def stock_condition_loop(self):
@@ -343,7 +446,7 @@ class StockCog(commands.Cog):
     @app_commands.command(name="재고현황패널", description="현재 채널에 재고 현황 메시지를 생성하고 자동 갱신 대상으로 설정합니다.")
     @app_commands.default_permissions(administrator=True)
     async def stock_condition_panel(self, interaction: discord.Interaction):
-        await interaction.response.defer()
+        await interaction.response.defer(ephemeral=True)
         reset_at = int(time.time())
         embed = await self.build_stock_condition_embed(interaction.guild, reset_at=reset_at)
         message = await interaction.channel.send(embed=embed)
@@ -356,14 +459,14 @@ class StockCog(commands.Cog):
             message.id,
         )
         await self.repos.settings.set_value(interaction.guild.id, "meta", "stock_condition_reset_at", reset_at)
-        await interaction.followup.send(embed=success_embed("재고 현황 패널 생성 완료"))
+        await interaction.followup.send(embed=success_embed("재고 현황 패널 생성 완료"), ephemeral=True)
 
     @app_commands.command(name="재고컨트롤패널", description="현재 채널에 재고 컨트롤 패널을 생성합니다.")
     @app_commands.default_permissions(send_messages=True)
     async def stock_control_panel(self, interaction: discord.Interaction):
-        await interaction.response.defer()
+        await interaction.response.defer(ephemeral=True)
         if not await self.staff_allowed(interaction):
-            await interaction.followup.send(embed=error_embed("권한 없음", "셀러 또는 관리자 권한이 필요합니다."))
+            await interaction.followup.send(embed=error_embed("권한 없음", "셀러 또는 관리자 권한이 필요합니다."), ephemeral=True)
             return
         embed, view = await self.build_stock_control_payload(interaction.guild)
         message = await interaction.channel.send(embed=embed, view=view)
@@ -375,7 +478,7 @@ class StockCog(commands.Cog):
             interaction.channel.id,
             message.id,
         )
-        await interaction.followup.send(embed=success_embed("재고 컨트롤 패널 생성 완료"))
+        await interaction.followup.send(embed=success_embed("재고 컨트롤 패널 생성 완료"), ephemeral=True)
 
 
 async def setup(bot: commands.Bot):
