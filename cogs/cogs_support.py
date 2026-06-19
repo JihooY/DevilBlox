@@ -6,7 +6,8 @@ import discord
 from discord import app_commands
 from discord.ext import commands, tasks
 
-from utils.embeds import embed_gif_kwargs, error_embed, info_embed, success_embed
+from utils.embeds import error_embed, info_embed, success_embed
+from utils.gifs import PANEL_GIFS, TICKET_CLOSE_GIFS, TICKET_OPEN_GIFS, random_embed_gif_kwargs
 from utils.panels import restore_panel_message, save_panel_location
 from utils.permissions import allow_ticket_access, deny_ticket_access
 from utils.roles import has_role
@@ -50,7 +51,7 @@ class SupportCog(commands.Cog):
             "support_panel_message_id",
             embed=info_embed("SUPPORT", "문의를 시작하려면 아래 버튼을 눌러주세요."),
             view=SupportView(self),
-            image_attachment_filename="sunlit_ruins.gif",
+            image_attachment_filename=PANEL_GIFS,
         )
 
     @tasks.loop(seconds=1, count=1)
@@ -153,7 +154,7 @@ class SupportCog(commands.Cog):
         embed = info_embed("SUPPORT", f"{interaction.user.mention}님이 문의를 시작했습니다.")
         await channel.send(
             content=f"{interaction.user.mention} {admin_role.mention}",
-            **embed_gif_kwargs(embed, "neon_corridor.gif"),
+            **random_embed_gif_kwargs(embed, TICKET_OPEN_GIFS),
         )
         await interaction.followup.send(embed=success_embed("문의 티켓 생성 완료", channel.mention), ephemeral=True)
 
@@ -162,7 +163,7 @@ class SupportCog(commands.Cog):
     async def support_panel(self, interaction: discord.Interaction):
         embed = info_embed("SUPPORT", "문의를 시작하려면 아래 버튼을 눌러주세요.")
         message = await interaction.channel.send(
-            **embed_gif_kwargs(embed, "sunlit_ruins.gif"),
+            **random_embed_gif_kwargs(embed, PANEL_GIFS),
             view=SupportView(self),
         )
         await save_panel_location(
@@ -190,7 +191,7 @@ class SupportCog(commands.Cog):
         if member:
             await deny_ticket_access(interaction.channel, member)
         embed = success_embed("문의 종료", "대화 기록을 저장한 뒤 10초 후 채널이 자동 삭제됩니다.")
-        await interaction.channel.send(**embed_gif_kwargs(embed, "moon_rabbit.gif"))
+        await interaction.channel.send(**random_embed_gif_kwargs(embed, TICKET_CLOSE_GIFS))
         transcript = await self._collect_transcript(interaction.channel)
         await self.repos.tickets.save_transcript(ticket, transcript)
         await self.repos.tickets.close(interaction.guild.id, interaction.channel_id, closed_by=interaction.user.id)

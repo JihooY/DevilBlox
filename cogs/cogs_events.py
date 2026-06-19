@@ -8,24 +8,10 @@ import discord
 from discord import app_commands
 from discord.ext import commands, tasks
 
-from utils.assets import asset_path, has_asset
-from utils.embeds import embed_gif_kwargs, info_embed, success_embed
+from utils.embeds import info_embed, success_embed
+from utils.gifs import TICKET_CONDITION_GIFS, panel_embed_edit_kwargs, random_embed_gif_kwargs
 
 log = logging.getLogger(__name__)
-
-TICKET_CONDITION_GIF = "team_sunset.gif"
-
-
-def ticket_condition_edit_kwargs(embed: discord.Embed, message: discord.Message) -> dict:
-    update = {"embed": embed}
-    if not has_asset("gifs", TICKET_CONDITION_GIF):
-        return update
-    embed.set_image(url=f"attachment://{TICKET_CONDITION_GIF}")
-    if not any(attachment.filename == TICKET_CONDITION_GIF for attachment in message.attachments):
-        update["attachments"] = [
-            discord.File(str(asset_path("gifs", TICKET_CONDITION_GIF)), filename=TICKET_CONDITION_GIF)
-        ]
-    return update
 
 
 class EventsCog(commands.Cog):
@@ -37,7 +23,7 @@ class EventsCog(commands.Cog):
         return self.bot.repos
 
     def ticket_condition_edit_kwargs(self, embed: discord.Embed, message: discord.Message) -> dict:
-        return ticket_condition_edit_kwargs(embed, message)
+        return panel_embed_edit_kwargs(embed, message, TICKET_CONDITION_GIFS)
 
     async def cog_load(self):
         self.ticket_condition_loop.start()
@@ -102,7 +88,7 @@ class EventsCog(commands.Cog):
         reset_at = int(time.time())
         await self.sync_seller_current_tickets(interaction.guild)
         embed = await self.build_ticket_condition_embed(interaction.guild, reset_at=reset_at)
-        message = await interaction.channel.send(**embed_gif_kwargs(embed, TICKET_CONDITION_GIF))
+        message = await interaction.channel.send(**random_embed_gif_kwargs(embed, TICKET_CONDITION_GIFS))
         await self.repos.settings.set_value(interaction.guild.id, "channels", "ticket_condition", interaction.channel.id)
         await self.repos.settings.set_value(interaction.guild.id, "meta", "ticket_condition_message_id", message.id)
         await self.repos.settings.set_value(interaction.guild.id, "meta", "ticket_condition_reset_at", reset_at)
@@ -145,7 +131,7 @@ class EventsCog(commands.Cog):
                 reset_at = int(time.time())
                 await self.repos.settings.set_value(guild.id, "meta", "ticket_condition_reset_at", reset_at)
                 embed = await self.build_ticket_condition_embed(guild, reset_at=reset_at)
-                await message.edit(**ticket_condition_edit_kwargs(embed, message))
+                await message.edit(**self.ticket_condition_edit_kwargs(embed, message))
             except discord.HTTPException:
                 continue
             except Exception:

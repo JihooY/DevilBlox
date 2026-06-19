@@ -9,26 +9,18 @@ from discord import app_commands
 from discord.ext import commands, tasks
 
 from database.stock import normalize_stock_id
-from utils.assets import asset_path, has_asset
-from utils.embeds import embed_gif_kwargs, error_embed, info_embed, success_embed
+from utils.embeds import error_embed, info_embed, success_embed
+from utils.gifs import (
+    STOCK_CONDITION_GIFS,
+    STOCK_CONTROL_GIFS,
+    SUCCESS_GIFS,
+    panel_embed_edit_kwargs,
+    random_embed_gif_kwargs,
+)
 from utils.panels import save_panel_location
 from utils.roles import has_role
 
 log = logging.getLogger(__name__)
-
-
-def embed_panel_image_update(
-    embed: discord.Embed,
-    message: discord.Message,
-    filename: str,
-) -> dict:
-    update = {"embed": embed}
-    if not has_asset("gifs", filename):
-        return update
-    embed.set_image(url=f"attachment://{filename}")
-    if not any(attachment.filename == filename for attachment in message.attachments):
-        update["attachments"] = [discord.File(str(asset_path("gifs", filename)), filename=filename)]
-    return update
 
 
 def parse_quantity(value: str) -> int | None:
@@ -305,7 +297,7 @@ class StockCog(commands.Cog):
             message = await channel.fetch_message(message_id)
             await self.repos.settings.set_value(guild.id, "meta", "stock_condition_reset_at", reset_at)
             embed = await self.build_stock_condition_embed(guild, reset_at=reset_at)
-            await message.edit(**embed_panel_image_update(embed, message, "golden_eclipse.gif"))
+            await message.edit(**panel_embed_edit_kwargs(embed, message, STOCK_CONDITION_GIFS))
         except discord.NotFound:
             await self.repos.settings.set_value(guild.id, "meta", "stock_condition_message_id", None)
         except discord.HTTPException:
@@ -323,7 +315,7 @@ class StockCog(commands.Cog):
         try:
             message = await channel.fetch_message(message_id)
             embed, view = await self.build_stock_control_payload(guild, selected_item_id)
-            update = embed_panel_image_update(embed, message, "blue_room.gif")
+            update = panel_embed_edit_kwargs(embed, message, STOCK_CONTROL_GIFS)
             update["view"] = view
             await message.edit(**update)
         except discord.NotFound:
@@ -434,7 +426,7 @@ class StockCog(commands.Cog):
         await self.refresh_stock_condition_panel(interaction.guild)
         embed = success_embed("재고 상품 등록 완료", f"`{item['item_id']}`: {int(item.get('quantity', 0) or 0)}개")
         await interaction.followup.send(
-            **embed_gif_kwargs(embed, "blue_spark.gif"),
+            **random_embed_gif_kwargs(embed, SUCCESS_GIFS),
             ephemeral=True,
         )
 
@@ -468,7 +460,7 @@ class StockCog(commands.Cog):
         await interaction.response.defer(ephemeral=True)
         reset_at = int(time.time())
         embed = await self.build_stock_condition_embed(interaction.guild, reset_at=reset_at)
-        message = await interaction.channel.send(**embed_gif_kwargs(embed, "golden_eclipse.gif"))
+        message = await interaction.channel.send(**random_embed_gif_kwargs(embed, STOCK_CONDITION_GIFS))
         await save_panel_location(
             self.repos,
             interaction.guild.id,
@@ -488,7 +480,7 @@ class StockCog(commands.Cog):
             await interaction.followup.send(embed=error_embed("권한 없음", "셀러 또는 관리자 권한이 필요합니다."), ephemeral=True)
             return
         embed, view = await self.build_stock_control_payload(interaction.guild)
-        message = await interaction.channel.send(**embed_gif_kwargs(embed, "blue_room.gif"), view=view)
+        message = await interaction.channel.send(**random_embed_gif_kwargs(embed, STOCK_CONTROL_GIFS), view=view)
         await save_panel_location(
             self.repos,
             interaction.guild.id,

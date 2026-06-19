@@ -4,7 +4,8 @@ import discord
 from discord import app_commands
 from discord.ext import commands, tasks
 
-from utils.embeds import embed_gif_kwargs, error_embed, info_embed, success_embed
+from utils.embeds import error_embed, info_embed, success_embed
+from utils.gifs import PANEL_GIFS, TICKET_CLOSE_GIFS, TICKET_OPEN_GIFS, random_embed_gif_kwargs
 from utils.panels import restore_panel_message, save_panel_location
 from utils.permissions import deny_ticket_access, move_to_category
 from utils.roles import has_role
@@ -178,7 +179,7 @@ class MiddlemanCog(commands.Cog):
             "middleman_panel_message_id",
             embed=info_embed("MIDDLEMAN SERVICE", "중개 시작 또는 중개자 정보를 확인할 수 있습니다."),
             view=MiddlemanPanelView(self),
-            image_attachment_filename="torii_glow.gif",
+            image_attachment_filename=PANEL_GIFS,
         )
 
     @tasks.loop(seconds=1, count=1)
@@ -235,7 +236,7 @@ class MiddlemanCog(commands.Cog):
         embed = info_embed("MIDDLEMAN SERVICE", "중개 티켓이 시작되었습니다.")
         await channel.send(
             content=f"{interaction.user.mention} {counterparty.mention} {middleman.mention}",
-            **embed_gif_kwargs(embed, "aqua_motion.gif"),
+            **random_embed_gif_kwargs(embed, TICKET_OPEN_GIFS),
         )
         draft_view.open_button.disabled = True
         if draft_view.message:
@@ -253,7 +254,7 @@ class MiddlemanCog(commands.Cog):
     async def middleman_panel(self, interaction: discord.Interaction):
         embed = info_embed("MIDDLEMAN SERVICE", "중개 시작 또는 중개자 정보를 확인할 수 있습니다.")
         message = await interaction.channel.send(
-            **embed_gif_kwargs(embed, "torii_glow.gif"),
+            **random_embed_gif_kwargs(embed, PANEL_GIFS),
             view=MiddlemanPanelView(self),
         )
         await save_panel_location(
@@ -313,7 +314,7 @@ class MiddlemanCog(commands.Cog):
             await log_channel.send(embed=embed)
 
         embed = success_embed("중개 종료", f"금액: {금액:,}원")
-        await interaction.channel.send(**embed_gif_kwargs(embed, "blue_spark.gif"))
+        await interaction.channel.send(**random_embed_gif_kwargs(embed, TICKET_CLOSE_GIFS))
         await interaction.followup.send(embed=success_embed("중개 티켓 종료 완료"), ephemeral=True)
 
 

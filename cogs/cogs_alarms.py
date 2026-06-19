@@ -4,7 +4,8 @@ import discord
 from discord import app_commands
 from discord.ext import commands, tasks
 
-from utils.embeds import embed_gif_kwargs, error_embed, info_embed, success_embed
+from utils.embeds import error_embed, info_embed, success_embed
+from utils.gifs import PANEL_GIFS, random_embed_gif_kwargs
 from utils.panels import restore_panel_message, save_panel_location
 
 
@@ -66,7 +67,7 @@ class AlarmCog(commands.Cog):
             "alarm_panel_message_id",
             embed=info_embed("ALARM SETTING", "받고 싶은 알림 역할을 켜거나 끌 수 있습니다."),
             view=AlarmView(self),
-            image_attachment_filename="crimson_umbrella.gif",
+            image_attachment_filename=PANEL_GIFS,
         )
 
     @tasks.loop(seconds=1, count=1)
@@ -83,7 +84,7 @@ class AlarmCog(commands.Cog):
     async def alarm_panel(self, interaction: discord.Interaction):
         embed = info_embed("ALARM SETTING", "받고 싶은 알림 역할을 켜거나 끌 수 있습니다.")
         message = await interaction.channel.send(
-            **embed_gif_kwargs(embed, "crimson_umbrella.gif"),
+            **random_embed_gif_kwargs(embed, PANEL_GIFS),
             view=AlarmView(self),
         )
         await save_panel_location(

@@ -9,12 +9,12 @@ from discord.ext import commands, tasks
 
 from utils.assets import asset_path, has_asset
 from utils.embeds import COLOR_DARK, error_embed, success_embed
+from utils.gifs import VERIFY_GIFS
 from utils.panels import restore_panel_message, save_panel_location
 from utils.roles import has_role
 
 VERIFY_TIMEOUT = 120
 MAX_ATTEMPTS = 3
-VERIFY_GIFS = ("verify1.gif", "verify2.gif", "verify3.gif", "festival_pair.gif", "starlight_panel.gif")
 
 
 class NumberButton(discord.ui.Button):

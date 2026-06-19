@@ -4,7 +4,7 @@ import logging
 
 import discord
 
-from utils.assets import asset_path, has_asset
+from utils.gifs import GifPool, choose_gif, gif_file
 
 log = logging.getLogger(__name__)
 
@@ -29,7 +29,7 @@ async def restore_panel_message(
     *,
     embed: discord.Embed | None = None,
     view: discord.ui.View | None = None,
-    image_attachment_filename: str | None = None,
+    image_attachment_filename: GifPool | None = None,
 ) -> bool:
     try:
         settings = await repos.settings.get(guild.id)
@@ -61,15 +61,13 @@ async def restore_panel_message(
 
     update = {}
     if embed is not None:
-        if image_attachment_filename and has_asset("gifs", image_attachment_filename):
-            embed.set_image(url=f"attachment://{image_attachment_filename}")
-            if not any(attachment.filename == image_attachment_filename for attachment in message.attachments):
-                update["attachments"] = [
-                    discord.File(
-                        str(asset_path("gifs", image_attachment_filename)),
-                        filename=image_attachment_filename,
-                    )
-                ]
+        image_filename = choose_gif(image_attachment_filename, message.attachments)
+        if image_filename:
+            embed.set_image(url=f"attachment://{image_filename}")
+            if not any(attachment.filename == image_filename for attachment in message.attachments):
+                file = gif_file(image_filename)
+                if file is not None:
+                    update["attachments"] = [file]
         update["embed"] = embed
     if view is not None:
         update["view"] = view

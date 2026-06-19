@@ -8,7 +8,15 @@ import discord
 from discord import app_commands
 from discord.ext import commands, tasks
 
-from utils.embeds import embed_gif_kwargs, error_embed, info_embed, success_embed
+from utils.embeds import error_embed, info_embed, success_embed
+from utils.gifs import (
+    PANEL_GIFS,
+    SUCCESS_GIFS,
+    TICKET_CLOSE_GIFS,
+    TICKET_OPEN_GIFS,
+    TICKET_STATE_GIFS,
+    random_embed_gif_kwargs,
+)
 from utils.panels import restore_panel_message, save_panel_location
 from utils.permissions import allow_ticket_access, deny_ticket_access
 from utils.roles import has_role
@@ -245,7 +253,10 @@ class PurchaseCog(commands.Cog):
         embed.add_field(name="셀러", value=seller.mention, inline=True)
         embed.add_field(name="구매자", value=interaction.user.mention, inline=True)
         embed.add_field(name="입금 계좌", value=account_value[:1024], inline=False)
-        await channel.send(content=f"{interaction.user.mention} {seller.mention}", **embed_gif_kwargs(embed, "shadow_gate.gif"))
+        await channel.send(
+            content=f"{interaction.user.mention} {seller.mention}",
+            **random_embed_gif_kwargs(embed, TICKET_OPEN_GIFS),
+        )
         await interaction.followup.send(embed=success_embed("구매 티켓 생성 완료", channel.mention), ephemeral=True)
 
     async def upgrade_user_grade(self, guild: discord.Guild, member: discord.Member, accrued_spent: int):
@@ -284,7 +295,7 @@ class PurchaseCog(commands.Cog):
                 "purchase_panel_message_id",
                 embed=embed,
                 view=PurchasePanelView(self, sellers),
-                image_attachment_filename="city_bridge.gif",
+                image_attachment_filename=PANEL_GIFS,
             )
         except Exception:
             log.exception("Failed to refresh purchase panel: guild_id=%s", guild.id)
@@ -305,7 +316,7 @@ class PurchaseCog(commands.Cog):
         await self.repos.sellers.upsert(interaction.guild.id, 셀러.id, 셀러.display_name)
         embed = success_embed("셀러 등록 완료", f"{셀러.mention}")
         await interaction.followup.send(
-            **embed_gif_kwargs(embed, "candy_room.gif"),
+            **random_embed_gif_kwargs(embed, SUCCESS_GIFS),
             ephemeral=True,
         )
         await self.refresh_purchase_panel(interaction.guild)
@@ -323,7 +334,7 @@ class PurchaseCog(commands.Cog):
             return
 
         embed = info_embed("PURCHASE", "원하는 셀러를 선택하면 개인 구매 티켓이 열립니다.")
-        message = await interaction.channel.send(**embed_gif_kwargs(embed, "city_bridge.gif"), view=PurchasePanelView(self, sellers))
+        message = await interaction.channel.send(**random_embed_gif_kwargs(embed, PANEL_GIFS), view=PurchasePanelView(self, sellers))
         await save_panel_location(
             self.repos,
             interaction.guild.id,
@@ -367,7 +378,7 @@ class PurchaseCog(commands.Cog):
             "구매 티켓 종료",
             f"상품명: {상품명}\n금액: {금액:,}원\n대화 기록을 저장한 뒤 10초 후 채널이 자동 삭제됩니다.",
         )
-        await channel.send(**embed_gif_kwargs(embed, "blue_spark.gif"))
+        await channel.send(**random_embed_gif_kwargs(embed, TICKET_CLOSE_GIFS))
         transcript = await collect_channel_transcript(channel)
         await self.repos.tickets.save_transcript(ticket, transcript)
         await self.repos.tickets.close(
@@ -394,7 +405,7 @@ class PurchaseCog(commands.Cog):
                 seller_label = seller.mention if seller else str(ticket["seller_id"])
                 embed = info_embed("PURCHASE LOG", f"{buyer_label}님 {상품명} 구매 감사합니다!")
                 embed.add_field(name="판매자", value=seller_label, inline=False)
-                await log_channel.send(**embed_gif_kwargs(embed, "blue_spark.gif"))
+                await log_channel.send(**random_embed_gif_kwargs(embed, SUCCESS_GIFS))
 
         await interaction.followup.send(embed=success_embed("구매 티켓 종료 완료", "10초 후 채널이 삭제됩니다."), ephemeral=True)
         await asyncio.sleep(10)
@@ -446,7 +457,7 @@ class PurchaseCog(commands.Cog):
 
         await channel.send(
             content=mention_role.mention if mention_role else None,
-            **embed_gif_kwargs(embed, "card_bite.gif"),
+            **random_embed_gif_kwargs(embed, TICKET_STATE_GIFS),
             allowed_mentions=discord.AllowedMentions(roles=True, users=False, everyone=False),
         )
 
@@ -480,7 +491,7 @@ class PurchaseCog(commands.Cog):
         await self.repos.sellers.set_payment_account(interaction.guild.id, target.id, 계좌정보)
         embed = success_embed("계좌 등록 완료", f"{target.mention} 티켓에 자동 표시됩니다.")
         await interaction.followup.send(
-            **embed_gif_kwargs(embed, "bubble_bath.gif"),
+            **random_embed_gif_kwargs(embed, SUCCESS_GIFS),
             ephemeral=True,
         )
 
