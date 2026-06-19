@@ -576,6 +576,13 @@ class VendingArchiveCog(commands.Cog):
             return None
         return guild.get_channel(channel_id or 0)
 
+    async def get_purchase_log_channel(self, guild: discord.Guild):
+        settings = await self.repos.settings.get(guild.id)
+        channel_id = settings["channels"].get("purchase_log") or settings["channels"].get("vending_log")
+        if channel_id and channel_id == settings["channels"].get("vending"):
+            return None
+        return guild.get_channel(channel_id or 0)
+
     def product_page_url(self, guild_id: int, product: dict | None) -> str | None:
         if not product:
             return None
@@ -722,10 +729,10 @@ class VendingArchiveCog(commands.Cog):
         return await channel.send(embed=embed)
 
     async def send_purchase_log(self, guild: discord.Guild, log_doc: dict):
-        channel = await self.get_log_channel(guild)
+        channel = await self.get_purchase_log_channel(guild)
         if not channel:
             return
-        embed = info_embed("구매 로그")
+        embed = info_embed("VENDING PURCHASE LOG")
         embed.add_field(name="구매 유저", value=f"<@{log_doc['user_id']}>", inline=True)
         embed.add_field(name="상품 ID", value=f"`{log_doc['product_id']}`", inline=True)
         embed.add_field(name="상품명", value=log_doc.get("title") or "-", inline=False)
