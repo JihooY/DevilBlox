@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import io
+import logging
 import re
 
 import discord
@@ -10,6 +11,8 @@ from discord.ext import commands
 from database.reviews import ReviewStore
 from utils.embeds import branded_files, error_embed, info_embed, success_embed
 from utils.gifs import SUCCESS_GIFS, random_embed_gif_kwargs
+
+log = logging.getLogger(__name__)
 
 MAX_REVIEW_PHOTO_BYTES = 8 * 1024 * 1024
 MAX_REVIEW_PHOTOS = 5
@@ -106,13 +109,29 @@ class ReviewModal(discord.ui.Modal):
 
 class ReviewRequestView(discord.ui.View):
     def __init__(self, cog: "ReviewsCog", review_id: str):
-        super().__init__(timeout=60 * 60 * 24 * 7)
+        super().__init__(timeout=None)
         self.cog = cog
         self.review_id = review_id
+        button = discord.ui.Button(
+            label="후기 작성",
+            style=discord.ButtonStyle.primary,
+            custom_id=f"devilblox:review:write:{review_id}",
+        )
+        button.callback = self.write_review
+        self.add_item(button)
 
-    @discord.ui.button(label="후기 작성", style=discord.ButtonStyle.primary)
-    async def write_review(self, interaction: discord.Interaction, _: discord.ui.Button):
-        await interaction.response.send_modal(ReviewModal(self.cog, self.review_id))
+    async def write_review(self, interaction: discord.Interaction):
+        try:
+            await interaction.response.send_modal(ReviewModal(self.cog, self.review_id))
+        except discord.NotFound:
+            log.warning("Review modal interaction expired before response: review_id=%s", self.review_id)
+        except discord.HTTPException:
+            log.exception("Failed to open review modal: review_id=%s", self.review_id)
+            if not interaction.response.is_done():
+                await interaction.response.send_message(
+                    embed=error_embed("후기 오류", "후기 창을 열지 못했습니다. 다시 눌러주세요."),
+                    ephemeral=True,
+                )
 
 
 class ReviewsCog(commands.Cog):
@@ -121,6 +140,7 @@ class ReviewsCog(commands.Cog):
 
     async def cog_load(self):
         await self.ensure_review_store()
+        await self.register_pending_review_views()
 
     @property
     def repos(self):
@@ -133,6 +153,29 @@ class ReviewsCog(commands.Cog):
             return
         repos.reviews = ReviewStore(db)
         await repos.reviews.ensure_indexes()
+
+    async def register_pending_review_views(self):
+        await self.ensure_review_store()
+        if not hasattr(self.repos, "reviews"):
+            return
+
+        registered = getattr(self.bot, "_devilblox_review_view_ids", None)
+        if registered is None:
+            registered = set()
+            setattr(self.bot, "_devilblox_review_view_ids", registered)
+
+        try:
+            reviews = await self.repos.reviews.list_pending(limit=500)
+        except Exception:
+            log.exception("Failed to register pending review views")
+            return
+
+        for review in reviews:
+            review_id = str(review.get("_id") or "")
+            if not review_id or review_id in registered:
+                continue
+            self.bot.add_view(ReviewRequestView(self, review_id))
+            registered.add(review_id)
 
     async def fetch_user(self, user_id: int) -> discord.User | discord.Member | None:
         user = self.bot.get_user(user_id)
@@ -211,7 +254,14 @@ class ReviewsCog(commands.Cog):
         photos: list[discord.Attachment] | None = None,
     ):
         private_response = interaction.guild is not None
-        await interaction.response.defer(ephemeral=private_response)
+        try:
+            await interaction.response.defer(ephemeral=private_response)
+        except discord.NotFound:
+            log.warning("Review submit interaction expired before defer: review_id=%s", review_id)
+            return
+        except discord.HTTPException:
+            log.exception("Failed to defer review submit interaction: review_id=%s", review_id)
+            return
         await self.ensure_review_store()
         existing = await self.repos.reviews.get(review_id)
         if existing is None:

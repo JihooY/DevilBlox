@@ -73,6 +73,13 @@ class ReviewStore:
     async def get(self, review_id: str):
         return await self.collection.find_one({"_id": review_id})
 
+    async def list_pending(self, limit: int = 500):
+        return (
+            await self.collection.find({"status": "pending"})
+            .sort("created_at", -1)
+            .to_list(length=limit)
+        )
+
     async def submit(
         self,
         review_id: str,

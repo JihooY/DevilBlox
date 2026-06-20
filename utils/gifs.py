@@ -175,14 +175,17 @@ def normalize_gif_pool(candidates: GifPool | None) -> tuple[str, ...]:
     return tuple(str(candidate) for candidate in candidates)
 
 
+@lru_cache(maxsize=128)
 def has_gif_asset(filename: str) -> bool:
-    return has_asset(OPTIMIZED_GIF_ASSET_FOLDER, filename) or has_asset(GIF_ASSET_FOLDER, filename)
+    return has_asset(GIF_ASSET_FOLDER, filename) or has_asset(OPTIMIZED_GIF_ASSET_FOLDER, filename)
 
 
+@lru_cache(maxsize=128)
 def gif_asset_path(filename: str):
-    if has_asset(OPTIMIZED_GIF_ASSET_FOLDER, filename):
-        return asset_path(OPTIMIZED_GIF_ASSET_FOLDER, filename)
-    return asset_path(GIF_ASSET_FOLDER, filename)
+    # Prefer originals: re-encoding GIFs can break hand-timed frames and palettes.
+    if has_asset(GIF_ASSET_FOLDER, filename):
+        return asset_path(GIF_ASSET_FOLDER, filename)
+    return asset_path(OPTIMIZED_GIF_ASSET_FOLDER, filename)
 
 
 @lru_cache(maxsize=64)

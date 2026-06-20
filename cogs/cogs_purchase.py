@@ -79,21 +79,72 @@ class PurchaseSelect(discord.ui.Select):
         await self.cog.open_purchase_ticket(interaction, int(self.values[0]))
 
 
+class PurchaseSellerRatingSelect(discord.ui.Select):
+    def __init__(self, cog: "PurchaseCog", sellers: list[dict]):
+        self.cog = cog
+        options = []
+        for seller in sellers[:25]:
+            options.append(
+                discord.SelectOption(
+                    label=seller.get("user_name") or str(seller["user_id"]),
+                    value=str(seller["user_id"]),
+                    description="이 셀러의 구매 후기 평점을 확인합니다.",
+                )
+            )
+        disabled = not options
+        if not options:
+            options.append(discord.SelectOption(label="등록된 셀러가 없습니다.", value="none"))
+        super().__init__(
+            placeholder="평점을 확인할 셀러를 선택하세요.",
+            options=options,
+            custom_id="devilblox:purchase:rating_select",
+            min_values=1,
+            max_values=1,
+            disabled=disabled,
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        if self.values[0] == "none":
+            await interaction.response.defer(ephemeral=True)
+            await interaction.followup.send(embed=error_embed("셀러 없음", "등록된 셀러가 없습니다."), ephemeral=True)
+            return
+        await self.cog.show_seller_rating(interaction, int(self.values[0]))
+
+
+class PurchaseSellerRatingView(discord.ui.View):
+    def __init__(self, cog: "PurchaseCog", sellers: list[dict]):
+        super().__init__(timeout=180)
+        self.add_item(PurchaseSellerRatingSelect(cog, sellers))
+
+
 class PurchasePanelView(discord.ui.View):
     def __init__(self, cog: "PurchaseCog", sellers: list[dict]):
         super().__init__(timeout=None)
+        self.cog = cog
         self.add_item(PurchaseSelect(cog, sellers))
 
-
-class PurchaseTicketView(discord.ui.View):
-    def __init__(self, cog: "PurchaseCog", seller_id: int):
-        super().__init__(timeout=None)
-        self.cog = cog
-        self.seller_id = seller_id
-
-    @discord.ui.button(label="셀러 평점", style=discord.ButtonStyle.primary)
+    @discord.ui.button(
+        label="셀러 평점",
+        style=discord.ButtonStyle.secondary,
+        custom_id="devilblox:purchase:rating",
+        row=1,
+    )
     async def seller_rating(self, interaction: discord.Interaction, _: discord.ui.Button):
-        await self.cog.show_seller_rating(interaction, self.seller_id)
+        await interaction.response.defer(ephemeral=True)
+        if not interaction.guild:
+            await interaction.followup.send(embed=error_embed("처리 실패", "서버 안에서만 사용할 수 있습니다."), ephemeral=True)
+            return
+
+        sellers = await self.cog.repos.sellers.list_active_options(interaction.guild.id)
+        if not sellers:
+            await interaction.followup.send(embed=error_embed("셀러 없음", "등록된 셀러가 없습니다."), ephemeral=True)
+            return
+
+        await interaction.followup.send(
+            embed=info_embed("셀러 평점", "평점을 확인할 셀러를 선택하세요."),
+            view=PurchaseSellerRatingView(self.cog, sellers),
+            ephemeral=True,
+        )
 
 
 class PurchaseCog(commands.Cog):
@@ -267,7 +318,6 @@ class PurchaseCog(commands.Cog):
         await channel.send(
             content=f"{interaction.user.mention} {seller.mention}",
             **random_embed_gif_kwargs(embed, TICKET_OPEN_GIFS),
-            view=PurchaseTicketView(self, seller.id),
         )
         await interaction.followup.send(embed=success_embed("구매 티켓 생성 완료", channel.mention), ephemeral=True)
 
