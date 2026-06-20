@@ -85,6 +85,17 @@ class PurchasePanelView(discord.ui.View):
         self.add_item(PurchaseSelect(cog, sellers))
 
 
+class PurchaseTicketView(discord.ui.View):
+    def __init__(self, cog: "PurchaseCog", seller_id: int):
+        super().__init__(timeout=None)
+        self.cog = cog
+        self.seller_id = seller_id
+
+    @discord.ui.button(label="셀러 평점", style=discord.ButtonStyle.primary)
+    async def seller_rating(self, interaction: discord.Interaction, _: discord.ui.Button):
+        await self.cog.show_seller_rating(interaction, self.seller_id)
+
+
 class PurchaseCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
@@ -256,8 +267,31 @@ class PurchaseCog(commands.Cog):
         await channel.send(
             content=f"{interaction.user.mention} {seller.mention}",
             **random_embed_gif_kwargs(embed, TICKET_OPEN_GIFS),
+            view=PurchaseTicketView(self, seller.id),
         )
         await interaction.followup.send(embed=success_embed("구매 티켓 생성 완료", channel.mention), ephemeral=True)
+
+    async def show_seller_rating(self, interaction: discord.Interaction, seller_id: int):
+        await interaction.response.defer(ephemeral=True)
+        if not interaction.guild:
+            await interaction.followup.send(embed=error_embed("처리 실패", "서버 안에서만 사용할 수 있습니다."), ephemeral=True)
+            return
+
+        reviews_cog = self.bot.get_cog("ReviewsCog")
+        if reviews_cog is None:
+            await interaction.followup.send(embed=error_embed("후기 시스템 없음", "후기 시스템이 아직 로드되지 않았습니다."), ephemeral=True)
+            return
+
+        rating_doc = await self.repos.reviews.get_seller_rating(interaction.guild.id, seller_id)
+        recent_reviews = await self.repos.reviews.list_by_seller(interaction.guild.id, seller_id, limit=5)
+        await interaction.followup.send(
+            embed=reviews_cog.build_seller_rating_embed(
+                seller_id=seller_id,
+                rating_doc=rating_doc,
+                recent_reviews=recent_reviews,
+            ),
+            ephemeral=True,
+        )
 
     async def upgrade_user_grade(self, guild: discord.Guild, member: discord.Member, accrued_spent: int):
         settings = await self.repos.settings.get(guild.id)

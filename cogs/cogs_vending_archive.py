@@ -456,7 +456,6 @@ class ProductDetailView(discord.ui.LayoutView):
         super().__init__(timeout=180)
         self.cog = cog
         self.product_id = product["product_id"]
-        self.seller_id = product.get("seller_id")
         lines = [
             f"## {product.get('title') or product['product_id']}",
             product.get("description") or "등록된 상품 설명이 없습니다.",
@@ -477,10 +476,6 @@ class ProductDetailView(discord.ui.LayoutView):
         )
         buy_button.callback = self.buy
         detail_buttons = [buy_button]
-        if self.seller_id:
-            rating_button = discord.ui.Button(label="셀러 평점", style=discord.ButtonStyle.primary)
-            rating_button.callback = self.seller_rating
-            detail_buttons.append(rating_button)
         page_url = cog.product_page_url(int(product["guild_id"]), product)
         if page_url:
             detail_buttons.append(discord.ui.Button(label="상품 페이지", style=discord.ButtonStyle.link, url=page_url))
@@ -489,12 +484,6 @@ class ProductDetailView(discord.ui.LayoutView):
 
     async def buy(self, interaction: discord.Interaction):
         await self.cog.handle_purchase(interaction, self.product_id)
-
-    async def seller_rating(self, interaction: discord.Interaction):
-        if not self.seller_id:
-            await interaction.response.send_message(embed=error_embed("셀러 없음", "이 상품에는 셀러가 등록되어 있지 않습니다."), ephemeral=True)
-            return
-        await self.cog.handle_seller_rating(interaction, int(self.seller_id))
 
 
 class DownloadSelect(discord.ui.Select):
@@ -1087,28 +1076,6 @@ class VendingArchiveCog(commands.Cog):
         await interaction.followup.send(
             view=ProductDetailView(self, product, owned=owned),
             files=branded_files(),
-            ephemeral=True,
-        )
-
-    async def handle_seller_rating(self, interaction: discord.Interaction, seller_id: int):
-        await interaction.response.defer(ephemeral=True)
-        if not interaction.guild:
-            await interaction.followup.send(embed=error_embed("처리 실패", "서버 안에서만 사용할 수 있습니다."), ephemeral=True)
-            return
-
-        reviews_cog = self.bot.get_cog("ReviewsCog")
-        if reviews_cog is None:
-            await interaction.followup.send(embed=error_embed("후기 시스템 없음", "후기 시스템이 아직 로드되지 않았습니다."), ephemeral=True)
-            return
-
-        rating_doc = await self.repos.reviews.get_seller_rating(interaction.guild.id, seller_id)
-        recent_reviews = await self.repos.reviews.list_by_seller(interaction.guild.id, seller_id, limit=5)
-        await interaction.followup.send(
-            embed=reviews_cog.build_seller_rating_embed(
-                seller_id=seller_id,
-                rating_doc=rating_doc,
-                recent_reviews=recent_reviews,
-            ),
             ephemeral=True,
         )
 
