@@ -30,6 +30,7 @@ async def restore_panel_message(
     embed: discord.Embed | None = None,
     view: discord.ui.View | None = None,
     image_attachment_filename: GifPool | None = None,
+    rotate_image: bool = False,
 ) -> bool:
     try:
         settings = await repos.settings.get(guild.id)
@@ -61,7 +62,7 @@ async def restore_panel_message(
 
     update = {}
     if embed is not None:
-        image_filename = choose_gif(image_attachment_filename, message.attachments)
+        image_filename = choose_gif(image_attachment_filename, message.attachments, force_new=rotate_image)
         if image_filename:
             embed.set_image(url=f"attachment://{image_filename}")
             if not any(attachment.filename == image_filename for attachment in message.attachments):

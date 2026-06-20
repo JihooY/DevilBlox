@@ -1,4 +1,5 @@
 from .coupons import CouponStore
+from .reviews import ReviewStore
 from .settings import GuildSettingsStore
 from .stock import StockStore
 from .tickets import MiddlemanStore, SellerStore, TicketStore
@@ -19,6 +20,7 @@ class Repositories:
         self.archives = ArchiveStore(db)
         self.vending = VendingLogStore(db)
         self.stock = StockStore(db)
+        self.reviews = ReviewStore(db)
 
     async def ensure_indexes(self):
         stores = (
@@ -33,6 +35,7 @@ class Repositories:
             self.archives,
             self.vending,
             self.stock,
+            self.reviews,
         )
         for store in stores:
             await store.ensure_indexes()

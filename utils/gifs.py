@@ -147,6 +147,21 @@ VERIFY_GIFS = (
     "dance_hall.gif",
 )
 
+# Keep the context names for existing callers, but let every place draw from the
+# full GIF set so panels and logs feel less repetitive.
+PANEL_GIFS = ALL_GIFS
+TICKET_OPEN_GIFS = ALL_GIFS
+TICKET_CLOSE_GIFS = ALL_GIFS
+SUCCESS_GIFS = ALL_GIFS
+DENIED_GIFS = ALL_GIFS
+TICKET_STATE_GIFS = ALL_GIFS
+TICKET_CONDITION_GIFS = ALL_GIFS
+STOCK_CONDITION_GIFS = ALL_GIFS
+STOCK_CONTROL_GIFS = ALL_GIFS
+VENDING_PANEL_GIFS = ALL_GIFS
+ARCHIVE_PANEL_GIFS = ALL_GIFS
+VERIFY_GIFS = ALL_GIFS
+
 
 def normalize_gif_pool(candidates: GifPool | None) -> tuple[str, ...]:
     if candidates is None:
@@ -160,15 +175,23 @@ def available_gifs(candidates: GifPool | None) -> tuple[str, ...]:
     return tuple(name for name in normalize_gif_pool(candidates) if has_asset("gifs", name))
 
 
-def choose_gif(candidates: GifPool | None, attachments: Iterable[discord.Attachment] = ()) -> str | None:
+def choose_gif(
+    candidates: GifPool | None,
+    attachments: Iterable[discord.Attachment] = (),
+    *,
+    force_new: bool = False,
+) -> str | None:
     pool = available_gifs(candidates)
     if not pool:
         return None
 
-    existing = [attachment.filename for attachment in attachments if attachment.filename in pool]
+    existing = [] if force_new else [attachment.filename for attachment in attachments if attachment.filename in pool]
     if existing:
         return existing[0]
-    return secrets.choice(pool)
+
+    current = {attachment.filename for attachment in attachments if attachment.filename in pool}
+    choices = tuple(name for name in pool if name not in current) if force_new and len(pool) > 1 else pool
+    return secrets.choice(choices or pool)
 
 
 def gif_file(filename: str | None) -> discord.File | None:
@@ -190,9 +213,11 @@ def panel_embed_edit_kwargs(
     embed: discord.Embed,
     message: discord.Message,
     candidates: GifPool,
+    *,
+    force_new: bool = False,
 ) -> dict:
     update = {"embed": embed}
-    filename = choose_gif(candidates, message.attachments)
+    filename = choose_gif(candidates, message.attachments, force_new=force_new)
     if filename is None:
         return update
     embed.set_image(url=f"attachment://{filename}")

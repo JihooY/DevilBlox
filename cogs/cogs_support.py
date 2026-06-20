@@ -43,7 +43,7 @@ class SupportCog(commands.Cog):
     def repos(self):
         return self.bot.repos
 
-    async def refresh_support_panel(self, guild: discord.Guild):
+    async def refresh_support_panel(self, guild: discord.Guild, *, rotate_image: bool = False):
         await restore_panel_message(
             self.repos,
             guild,
@@ -52,12 +52,13 @@ class SupportCog(commands.Cog):
             embed=info_embed("SUPPORT", "문의를 시작하려면 아래 버튼을 눌러주세요."),
             view=SupportView(self),
             image_attachment_filename=PANEL_GIFS,
+            rotate_image=rotate_image,
         )
 
-    @tasks.loop(seconds=1, count=1)
+    @tasks.loop(minutes=1)
     async def restore_support_panel_loop(self):
         for guild in self.bot.guilds:
-            await self.refresh_support_panel(guild)
+            await self.refresh_support_panel(guild, rotate_image=True)
 
     @restore_support_panel_loop.before_loop
     async def before_restore_support_panel_loop(self):

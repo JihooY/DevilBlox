@@ -171,7 +171,7 @@ class MiddlemanCog(commands.Cog):
     def repos(self):
         return self.bot.repos
 
-    async def refresh_middleman_panel(self, guild: discord.Guild):
+    async def refresh_middleman_panel(self, guild: discord.Guild, *, rotate_image: bool = False):
         await restore_panel_message(
             self.repos,
             guild,
@@ -180,12 +180,13 @@ class MiddlemanCog(commands.Cog):
             embed=info_embed("MIDDLEMAN SERVICE", "중개 시작 또는 중개자 정보를 확인할 수 있습니다."),
             view=MiddlemanPanelView(self),
             image_attachment_filename=PANEL_GIFS,
+            rotate_image=rotate_image,
         )
 
-    @tasks.loop(seconds=1, count=1)
+    @tasks.loop(minutes=1)
     async def restore_middleman_panel_loop(self):
         for guild in self.bot.guilds:
-            await self.refresh_middleman_panel(guild)
+            await self.refresh_middleman_panel(guild, rotate_image=True)
 
     @restore_middleman_panel_loop.before_loop
     async def before_restore_middleman_panel_loop(self):

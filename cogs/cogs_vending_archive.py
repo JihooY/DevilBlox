@@ -578,7 +578,7 @@ class VendingArchiveCog(commands.Cog):
 
     async def get_purchase_log_channel(self, guild: discord.Guild):
         settings = await self.repos.settings.get(guild.id)
-        channel_id = settings["channels"].get("purchase_log") or settings["channels"].get("vending_log")
+        channel_id = settings["channels"].get("purchase_log")
         if channel_id and channel_id == settings["channels"].get("vending"):
             return None
         return guild.get_channel(channel_id or 0)
@@ -635,7 +635,7 @@ class VendingArchiveCog(commands.Cog):
     async def build_vending_panel_view(self, guild_id: int, gif_name: str | None = None) -> VendingPanelView:
         return VendingPanelView(self, stats=await self.vending_panel_stats(guild_id), gif_name=gif_name)
 
-    async def refresh_vending_panel(self, guild: discord.Guild):
+    async def refresh_vending_panel(self, guild: discord.Guild, *, rotate_image: bool = False):
         stats = await self.vending_panel_stats(guild.id)
         await self.restore_v2_panel_message(
             guild,
@@ -643,6 +643,7 @@ class VendingArchiveCog(commands.Cog):
             "vending_panel_message_id",
             lambda gif_name: VendingPanelView(self, stats=stats, gif_name=gif_name),
             image_attachment_filename=VENDING_PANEL_GIFS,
+            rotate_image=rotate_image,
         )
 
     def build_charge_embed(
@@ -729,17 +730,33 @@ class VendingArchiveCog(commands.Cog):
         return await channel.send(embed=embed)
 
     async def send_purchase_log(self, guild: discord.Guild, log_doc: dict):
-        channel = await self.get_purchase_log_channel(guild)
-        if not channel:
-            return
-        embed = info_embed("VENDING PURCHASE LOG")
-        embed.add_field(name="구매 유저", value=f"<@{log_doc['user_id']}>", inline=True)
-        embed.add_field(name="상품 ID", value=f"`{log_doc['product_id']}`", inline=True)
-        embed.add_field(name="상품명", value=log_doc.get("title") or "-", inline=False)
-        embed.add_field(name="구매 전 금액", value=f"{log_doc['before_cash']:,}원", inline=True)
-        embed.add_field(name="구매 후 잔액", value=f"{log_doc['after_cash']:,}원", inline=True)
-        embed.add_field(name="가격", value=f"{log_doc['price']:,}원", inline=True)
-        await channel.send(**random_embed_gif_kwargs(embed, SUCCESS_GIFS))
+        buyer_mention = f"<@{log_doc['user_id']}>"
+        product_title = log_doc.get("title") or "-"
+        price = int(log_doc.get("price", 0))
+        time_value = None
+        purchased_at = log_doc.get("purchased_at")
+        if hasattr(purchased_at, "timestamp"):
+            timestamp = int(purchased_at.timestamp())
+            time_value = f"<t:{timestamp}:F> (<t:{timestamp}:R>)"
+
+        vending_log_channel = await self.get_log_channel(guild)
+        if vending_log_channel:
+            embed = info_embed("VENDING PURCHASE LOG")
+            embed.add_field(name="구매 유저", value=buyer_mention, inline=True)
+            embed.add_field(name="상품 ID", value=f"`{log_doc['product_id']}`", inline=True)
+            embed.add_field(name="상품명", value=product_title, inline=False)
+            embed.add_field(name="가격", value=f"{price:,}원", inline=True)
+            if time_value:
+                embed.add_field(name="구매 시간", value=time_value, inline=False)
+            await vending_log_channel.send(**random_embed_gif_kwargs(embed, SUCCESS_GIFS))
+
+        purchase_log_channel = await self.get_purchase_log_channel(guild)
+        if purchase_log_channel and (not vending_log_channel or purchase_log_channel.id != vending_log_channel.id):
+            embed = info_embed("PURCHASE LOG", f"{buyer_mention}님 {product_title} 구매 감사합니다!")
+            embed.add_field(name="구매 상품", value=product_title, inline=True)
+            if time_value:
+                embed.add_field(name="구매 시간", value=time_value, inline=False)
+            await purchase_log_channel.send(**random_embed_gif_kwargs(embed, SUCCESS_GIFS))
 
     async def send_user_dm(self, guild: discord.Guild, user_id: int, embed: discord.Embed):
         user = guild.get_member(user_id) or self.bot.get_user(user_id)
@@ -1097,6 +1114,23 @@ class VendingArchiveCog(commands.Cog):
             )
 
         await self.send_purchase_log(interaction.guild, log_doc)
+        reviews_cog = self.bot.get_cog("ReviewsCog")
+        if reviews_cog is not None:
+            category = None
+            if product.get("category_id"):
+                category = await self.repos.product_categories.get(interaction.guild.id, product["category_id"])
+            await reviews_cog.request_review(
+                guild=interaction.guild,
+                buyer_id=interaction.user.id,
+                seller_id=product.get("seller_id"),
+                product_id=product.get("product_id", ""),
+                product_title=product.get("title") or product.get("product_id") or "상품",
+                category_id=product.get("category_id", ""),
+                category_name=(category or {}).get("name", ""),
+                source="vending",
+                purchased_at=log_doc.get("purchased_at"),
+                amount=price,
+            )
         await interaction.followup.send(embed=self.build_download_embed(product), ephemeral=True)
 
     async def handle_download_menu(self, interaction: discord.Interaction):
@@ -1174,7 +1208,7 @@ class VendingArchiveCog(commands.Cog):
             ephemeral=True,
         )
 
-    @tasks.loop(seconds=1, count=1)
+    @tasks.loop(minutes=1)
     async def restore_panel_loop(self):
         for guild in self.bot.guilds:
             vending_stats = await self.vending_panel_stats(guild.id)
@@ -1184,6 +1218,7 @@ class VendingArchiveCog(commands.Cog):
                 "vending_panel_message_id",
                 lambda gif_name: VendingPanelView(self, stats=vending_stats, gif_name=gif_name),
                 image_attachment_filename=VENDING_PANEL_GIFS,
+                rotate_image=True,
             )
             await self.restore_v2_panel_message(
                 guild,
@@ -1191,6 +1226,7 @@ class VendingArchiveCog(commands.Cog):
                 "archive_panel_message_id",
                 lambda gif_name: ArchivePanelView(self, gif_name=gif_name),
                 image_attachment_filename=ARCHIVE_PANEL_GIFS,
+                rotate_image=True,
             )
 
     @restore_panel_loop.before_loop
@@ -1205,6 +1241,7 @@ class VendingArchiveCog(commands.Cog):
         view: discord.ui.LayoutView | Callable[[str | None], discord.ui.LayoutView],
         *,
         image_attachment_filename=None,
+        rotate_image: bool = False,
     ) -> bool:
         settings = await self.repos.settings.get(guild.id)
         channel_id = settings["channels"].get(channel_key)
@@ -1216,7 +1253,7 @@ class VendingArchiveCog(commands.Cog):
             return False
         try:
             message = await channel.fetch_message(message_id)
-            image_filename = choose_gif(image_attachment_filename, message.attachments)
+            image_filename = choose_gif(image_attachment_filename, message.attachments, force_new=rotate_image)
             panel_view = view(image_filename) if callable(view) else view
             update = {"content": None, "embeds": [], "view": panel_view}
             if image_filename and not any(attachment.filename == image_filename for attachment in message.attachments):

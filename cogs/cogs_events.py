@@ -22,8 +22,14 @@ class EventsCog(commands.Cog):
     def repos(self):
         return self.bot.repos
 
-    def ticket_condition_edit_kwargs(self, embed: discord.Embed, message: discord.Message) -> dict:
-        return panel_embed_edit_kwargs(embed, message, TICKET_CONDITION_GIFS)
+    def ticket_condition_edit_kwargs(
+        self,
+        embed: discord.Embed,
+        message: discord.Message,
+        *,
+        rotate_image: bool = False,
+    ) -> dict:
+        return panel_embed_edit_kwargs(embed, message, TICKET_CONDITION_GIFS, force_new=rotate_image)
 
     async def cog_load(self):
         self.ticket_condition_loop.start()
@@ -131,7 +137,7 @@ class EventsCog(commands.Cog):
                 reset_at = int(time.time())
                 await self.repos.settings.set_value(guild.id, "meta", "ticket_condition_reset_at", reset_at)
                 embed = await self.build_ticket_condition_embed(guild, reset_at=reset_at)
-                await message.edit(**self.ticket_condition_edit_kwargs(embed, message))
+                await message.edit(**self.ticket_condition_edit_kwargs(embed, message, rotate_image=True))
             except discord.HTTPException:
                 continue
             except Exception:

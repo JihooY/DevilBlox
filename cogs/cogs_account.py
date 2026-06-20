@@ -91,7 +91,7 @@ class AccountCog(commands.Cog):
         )
         return embed
 
-    async def refresh_account_panel(self, guild: discord.Guild):
+    async def refresh_account_panel(self, guild: discord.Guild, *, rotate_image: bool = False):
         await restore_panel_message(
             self.repos,
             guild,
@@ -100,12 +100,13 @@ class AccountCog(commands.Cog):
             embed=info_embed("ACCOUNT INFO", "계정 정보와 보유 쿠폰을 확인할 수 있습니다."),
             view=AccountView(self),
             image_attachment_filename=PANEL_GIFS,
+            rotate_image=rotate_image,
         )
 
-    @tasks.loop(seconds=1, count=1)
+    @tasks.loop(minutes=1)
     async def restore_account_panel_loop(self):
         for guild in self.bot.guilds:
-            await self.refresh_account_panel(guild)
+            await self.refresh_account_panel(guild, rotate_image=True)
 
     @restore_account_panel_loop.before_loop
     async def before_restore_account_panel_loop(self):

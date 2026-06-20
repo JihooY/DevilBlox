@@ -114,7 +114,7 @@ class PurchaseCog(commands.Cog):
         settings = await self.repos.settings.get(interaction.guild.id)
         return has_role(interaction.user, settings["roles"].get("admin"))
 
-    async def refresh_ticket_condition_panel(self, guild: discord.Guild):
+    async def refresh_ticket_condition_panel(self, guild: discord.Guild, *, rotate_image: bool = False):
         events_cog = self.bot.get_cog("EventsCog")
         if events_cog is None or not hasattr(events_cog, "build_ticket_condition_embed"):
             return
@@ -133,7 +133,7 @@ class PurchaseCog(commands.Cog):
             message = await channel.fetch_message(message_id)
             embed = await events_cog.build_ticket_condition_embed(guild)
             if hasattr(events_cog, "ticket_condition_edit_kwargs"):
-                await message.edit(**events_cog.ticket_condition_edit_kwargs(embed, message))
+                await message.edit(**events_cog.ticket_condition_edit_kwargs(embed, message, rotate_image=rotate_image))
             else:
                 await message.edit(embed=embed)
         except discord.HTTPException:
@@ -274,7 +274,7 @@ class PurchaseCog(commands.Cog):
                 await self.repos.users.set_grade(guild.id, member.id, role.id)
             return
 
-    async def refresh_purchase_panel(self, guild: discord.Guild):
+    async def refresh_purchase_panel(self, guild: discord.Guild, *, rotate_image: bool = False):
         try:
             settings = await self.repos.settings.get(guild.id)
             channel_id = settings["channels"].get("purchase")
@@ -296,6 +296,7 @@ class PurchaseCog(commands.Cog):
                 embed=embed,
                 view=PurchasePanelView(self, sellers),
                 image_attachment_filename=PANEL_GIFS,
+                rotate_image=rotate_image,
             )
         except Exception:
             log.exception("Failed to refresh purchase panel: guild_id=%s", guild.id)
@@ -303,7 +304,7 @@ class PurchaseCog(commands.Cog):
     @tasks.loop(minutes=1)
     async def purchase_panel_loop(self):
         for guild in self.bot.guilds:
-            await self.refresh_purchase_panel(guild)
+            await self.refresh_purchase_panel(guild, rotate_image=True)
 
     @purchase_panel_loop.before_loop
     async def before_purchase_panel_loop(self):
@@ -347,7 +348,12 @@ class PurchaseCog(commands.Cog):
 
     @app_commands.command(name="구매티켓종료", description="현재 구매 티켓을 종료하고 판매 기록을 저장합니다.")
     @app_commands.default_permissions(send_messages=True)
-    async def close_purchase_ticket(self, interaction: discord.Interaction, 상품명: str, 금액: int):
+    @app_commands.describe(
+        상품명="구매 완료된 상품명",
+        금액="구매 금액",
+        category_id="후기 검색에 사용할 상품 카테고리 ID",
+    )
+    async def close_purchase_ticket(self, interaction: discord.Interaction, 상품명: str, 금액: int, category_id: str = ""):
         await interaction.response.defer(ephemeral=True)
         if not await self._seller_allowed(interaction):
             await interaction.followup.send(embed=error_embed("권한 없음", "셀러 권한이 필요합니다."), ephemeral=True)
@@ -368,6 +374,13 @@ class PurchaseCog(commands.Cog):
         seller = await fetch_member(interaction.guild, ticket["seller_id"])
         channel = interaction.channel
         settings = await self.repos.settings.get(interaction.guild.id)
+        category = None
+        if category_id.strip():
+            category = await self.repos.product_categories.get(interaction.guild.id, category_id)
+            if category is None:
+                await interaction.followup.send(embed=error_embed("카테고리 없음", "해당 카테고리 ID를 찾을 수 없습니다."), ephemeral=True)
+                return
+        closed_at = datetime.now(timezone.utc)
 
         if buyer:
             await deny_ticket_access(channel, buyer)
@@ -386,6 +399,8 @@ class PurchaseCog(commands.Cog):
             channel.id,
             product_name=상품명,
             amount=금액,
+            product_category_id=(category or {}).get("category_id", ""),
+            product_category_name=(category or {}).get("name", ""),
             closed_by=interaction.user.id,
         )
         await self.remove_seller_current_ticket(interaction.guild.id, ticket["seller_id"], channel.id)
@@ -405,11 +420,44 @@ class PurchaseCog(commands.Cog):
                 seller_label = seller.mention if seller else str(ticket["seller_id"])
                 embed = info_embed("PURCHASE LOG", f"{buyer_label}님 {상품명} 구매 감사합니다!")
                 embed.add_field(name="판매자", value=seller_label, inline=False)
+                if category:
+                    embed.add_field(name="카테고리", value=f"{category['name']} (`{category['category_id']}`)", inline=False)
+                timestamp = int(closed_at.timestamp())
+                embed.add_field(name="구매 시간", value=f"<t:{timestamp}:F> (<t:{timestamp}:R>)", inline=False)
                 await log_channel.send(**random_embed_gif_kwargs(embed, SUCCESS_GIFS))
+
+            reviews_cog = self.bot.get_cog("ReviewsCog")
+            if reviews_cog is not None:
+                await reviews_cog.request_review(
+                    guild=interaction.guild,
+                    buyer_id=ticket["user_id"],
+                    seller_id=ticket["seller_id"],
+                    product_title=상품명,
+                    category_id=(category or {}).get("category_id", ""),
+                    category_name=(category or {}).get("name", ""),
+                    source="purchase_ticket",
+                    purchased_at=closed_at,
+                    amount=금액,
+                )
 
         await interaction.followup.send(embed=success_embed("구매 티켓 종료 완료", "10초 후 채널이 삭제됩니다."), ephemeral=True)
         await asyncio.sleep(10)
         await channel.delete(reason="DevilBlox purchase ticket closed and transcript saved")
+
+    @close_purchase_ticket.autocomplete("category_id")
+    async def close_purchase_category_autocomplete(self, interaction: discord.Interaction, current: str):
+        if not interaction.guild:
+            return []
+        current_lower = current.casefold()
+        categories = await self.repos.product_categories.list_active(interaction.guild.id)
+        choices = []
+        for category in categories:
+            label = f"{category.get('emoji') or ''} {category['name']} ({category['category_id']})".strip()
+            haystack = f"{category['category_id']} {category['name']}".casefold()
+            if current_lower and current_lower not in haystack:
+                continue
+            choices.append(app_commands.Choice(name=label[:100], value=category["category_id"]))
+        return choices[:25]
 
     @app_commands.command(name="티켓설정", description="본인 셀러 티켓의 생성 가능 여부를 바꿉니다.")
     @app_commands.default_permissions(send_messages=True)

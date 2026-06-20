@@ -283,7 +283,7 @@ class StockCog(commands.Cog):
             embed.add_field(name="현재 재고", value=f"{int(selected.get('quantity', 0) or 0)}개", inline=True)
         return embed, StockControlView(self, items, selected_id)
 
-    async def refresh_stock_condition_panel(self, guild: discord.Guild):
+    async def refresh_stock_condition_panel(self, guild: discord.Guild, *, rotate_image: bool = False):
         settings = await self.repos.settings.get(guild.id)
         channel_id = settings["channels"].get("stock_condition")
         message_id = settings["meta"].get("stock_condition_message_id")
@@ -297,13 +297,19 @@ class StockCog(commands.Cog):
             message = await channel.fetch_message(message_id)
             await self.repos.settings.set_value(guild.id, "meta", "stock_condition_reset_at", reset_at)
             embed = await self.build_stock_condition_embed(guild, reset_at=reset_at)
-            await message.edit(**panel_embed_edit_kwargs(embed, message, STOCK_CONDITION_GIFS))
+            await message.edit(**panel_embed_edit_kwargs(embed, message, STOCK_CONDITION_GIFS, force_new=rotate_image))
         except discord.NotFound:
             await self.repos.settings.set_value(guild.id, "meta", "stock_condition_message_id", None)
         except discord.HTTPException:
             return
 
-    async def refresh_stock_control_panel(self, guild: discord.Guild, selected_item_id: str | None = None):
+    async def refresh_stock_control_panel(
+        self,
+        guild: discord.Guild,
+        selected_item_id: str | None = None,
+        *,
+        rotate_image: bool = False,
+    ):
         settings = await self.repos.settings.get(guild.id)
         channel_id = settings["channels"].get("stock_control")
         message_id = settings["meta"].get("stock_control_message_id")
@@ -315,7 +321,7 @@ class StockCog(commands.Cog):
         try:
             message = await channel.fetch_message(message_id)
             embed, view = await self.build_stock_control_payload(guild, selected_item_id)
-            update = panel_embed_edit_kwargs(embed, message, STOCK_CONTROL_GIFS)
+            update = panel_embed_edit_kwargs(embed, message, STOCK_CONTROL_GIFS, force_new=rotate_image)
             update["view"] = view
             await message.edit(**update)
         except discord.NotFound:
@@ -326,7 +332,9 @@ class StockCog(commands.Cog):
     async def update_control_message(self, interaction: discord.Interaction, selected_item_id: str | None = None):
         embed, view = await self.build_stock_control_payload(interaction.guild, selected_item_id)
         if interaction.message is not None:
-            await interaction.message.edit(embed=embed, view=view)
+            update = panel_embed_edit_kwargs(embed, interaction.message, STOCK_CONTROL_GIFS)
+            update["view"] = view
+            await interaction.message.edit(**update)
             return
         await self.refresh_stock_control_panel(interaction.guild, selected_item_id)
 
@@ -434,7 +442,7 @@ class StockCog(commands.Cog):
     async def stock_condition_loop(self):
         for guild in self.bot.guilds:
             try:
-                await self.refresh_stock_condition_panel(guild)
+                await self.refresh_stock_condition_panel(guild, rotate_image=True)
             except Exception:
                 log.exception("Failed to refresh stock condition panel: guild_id=%s", guild.id)
 
@@ -442,11 +450,11 @@ class StockCog(commands.Cog):
     async def before_stock_condition_loop(self):
         await self.bot.wait_until_ready()
 
-    @tasks.loop(seconds=1, count=1)
+    @tasks.loop(minutes=1)
     async def restore_stock_control_loop(self):
         for guild in self.bot.guilds:
             try:
-                await self.refresh_stock_control_panel(guild)
+                await self.refresh_stock_control_panel(guild, rotate_image=True)
             except Exception:
                 log.exception("Failed to restore stock control panel: guild_id=%s", guild.id)
 

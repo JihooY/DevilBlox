@@ -59,7 +59,7 @@ class AlarmCog(commands.Cog):
     def repos(self):
         return self.bot.repos
 
-    async def refresh_alarm_panel(self, guild: discord.Guild):
+    async def refresh_alarm_panel(self, guild: discord.Guild, *, rotate_image: bool = False):
         await restore_panel_message(
             self.repos,
             guild,
@@ -68,12 +68,13 @@ class AlarmCog(commands.Cog):
             embed=info_embed("ALARM SETTING", "받고 싶은 알림 역할을 켜거나 끌 수 있습니다."),
             view=AlarmView(self),
             image_attachment_filename=PANEL_GIFS,
+            rotate_image=rotate_image,
         )
 
-    @tasks.loop(seconds=1, count=1)
+    @tasks.loop(minutes=1)
     async def restore_alarm_panel_loop(self):
         for guild in self.bot.guilds:
-            await self.refresh_alarm_panel(guild)
+            await self.refresh_alarm_panel(guild, rotate_image=True)
 
     @restore_alarm_panel_loop.before_loop
     async def before_restore_alarm_panel_loop(self):
