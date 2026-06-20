@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import secrets
 from collections.abc import Iterable, Sequence
+from functools import lru_cache
 
 import discord
 
@@ -9,6 +10,8 @@ from utils.assets import asset_path, has_asset
 from utils.embeds import BRAND_LOGO_FILENAME, brand_embed, branded_files
 
 GifPool = str | Sequence[str]
+GIF_ASSET_FOLDER = "gifs"
+OPTIMIZED_GIF_ASSET_FOLDER = "gifs_optimized"
 
 ALL_GIFS = (
     "abyss_ticket.gif",
@@ -172,8 +175,23 @@ def normalize_gif_pool(candidates: GifPool | None) -> tuple[str, ...]:
     return tuple(str(candidate) for candidate in candidates)
 
 
+def has_gif_asset(filename: str) -> bool:
+    return has_asset(OPTIMIZED_GIF_ASSET_FOLDER, filename) or has_asset(GIF_ASSET_FOLDER, filename)
+
+
+def gif_asset_path(filename: str):
+    if has_asset(OPTIMIZED_GIF_ASSET_FOLDER, filename):
+        return asset_path(OPTIMIZED_GIF_ASSET_FOLDER, filename)
+    return asset_path(GIF_ASSET_FOLDER, filename)
+
+
+@lru_cache(maxsize=64)
+def _available_gifs_cached(candidates: tuple[str, ...]) -> tuple[str, ...]:
+    return tuple(name for name in candidates if has_gif_asset(name))
+
+
 def available_gifs(candidates: GifPool | None) -> tuple[str, ...]:
-    return tuple(name for name in normalize_gif_pool(candidates) if has_asset("gifs", name))
+    return _available_gifs_cached(normalize_gif_pool(candidates))
 
 
 def choose_gif(
@@ -196,9 +214,9 @@ def choose_gif(
 
 
 def gif_file(filename: str | None) -> discord.File | None:
-    if not filename or not has_asset("gifs", filename):
+    if not filename or not has_gif_asset(filename):
         return None
-    return discord.File(str(asset_path("gifs", filename)), filename=filename)
+    return discord.File(str(gif_asset_path(filename)), filename=filename)
 
 
 def random_embed_gif_kwargs(embed: discord.Embed, candidates: GifPool) -> dict:

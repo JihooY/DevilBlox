@@ -12,6 +12,7 @@ from utils.embeds import branded_files, error_embed, info_embed, success_embed
 from utils.gifs import SUCCESS_GIFS, random_embed_gif_kwargs
 
 MAX_REVIEW_PHOTO_BYTES = 8 * 1024 * 1024
+MAX_REVIEW_PHOTOS = 5
 IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".gif"}
 
 
@@ -40,10 +41,15 @@ def truncate(value: str, limit: int) -> str:
     return value[: limit - 1].rstrip() + "…"
 
 
-def safe_photo_filename(attachment: discord.Attachment) -> str:
+def safe_photo_filename(attachment: discord.Attachment, index: int) -> str:
     filename = re.sub(r"[^A-Za-z0-9_.-]", "_", attachment.filename or "review-photo.png")
     if "." not in filename:
         filename += ".png"
+    if "." in filename:
+        stem, extension = filename.rsplit(".", 1)
+        filename = f"review_{index}_{stem[:60]}.{extension}"
+    else:
+        filename = f"review_{index}_{filename[:60]}"
     return filename[:80]
 
 
@@ -77,13 +83,13 @@ class ReviewModal(discord.ui.Modal):
             min_length=2,
             max_length=1000,
         )
-        self.photo_upload = discord.ui.FileUpload(required=False, min_values=0, max_values=1)
+        self.photo_upload = discord.ui.FileUpload(required=False, min_values=0, max_values=MAX_REVIEW_PHOTOS)
         self.add_item(self.rating)
         self.add_item(self.content)
         self.add_item(
             discord.ui.Label(
                 text="사진 리뷰",
-                description="선택 사항입니다. 이미지 파일 1장을 업로드할 수 있습니다.",
+                description=f"선택 사항입니다. 이미지 파일을 최대 {MAX_REVIEW_PHOTOS}장까지 업로드할 수 있습니다.",
                 component=self.photo_upload,
             )
         )
@@ -94,7 +100,7 @@ class ReviewModal(discord.ui.Modal):
             self.review_id,
             rating_text=str(self.rating.value),
             content=str(self.content.value),
-            photo=self.photo_upload.values[0] if self.photo_upload.values else None,
+            photos=list(self.photo_upload.values or []),
         )
 
 
@@ -202,25 +208,26 @@ class ReviewsCog(commands.Cog):
         *,
         rating_text: str,
         content: str,
-        photo: discord.Attachment | None = None,
+        photos: list[discord.Attachment] | None = None,
     ):
-        await self.ensure_review_store()
         private_response = interaction.guild is not None
+        await interaction.response.defer(ephemeral=private_response)
+        await self.ensure_review_store()
         existing = await self.repos.reviews.get(review_id)
         if existing is None:
-            await interaction.response.send_message(
+            await interaction.followup.send(
                 embed=error_embed("후기 없음", "후기 요청을 찾을 수 없습니다."),
                 ephemeral=private_response,
             )
             return
         if existing.get("buyer_id") != interaction.user.id:
-            await interaction.response.send_message(
+            await interaction.followup.send(
                 embed=error_embed("작성 불가", "이 후기는 구매자만 작성할 수 있습니다."),
                 ephemeral=private_response,
             )
             return
         if existing.get("status") != "pending":
-            await interaction.response.send_message(
+            await interaction.followup.send(
                 embed=error_embed("작성 완료", "이미 작성된 후기입니다."),
                 ephemeral=private_response,
             )
@@ -229,13 +236,13 @@ class ReviewsCog(commands.Cog):
         try:
             rating = int(rating_text.strip())
         except ValueError:
-            await interaction.response.send_message(
+            await interaction.followup.send(
                 embed=error_embed("별점 오류", "별점은 1~5 사이 숫자로 입력해주세요."),
                 ephemeral=private_response,
             )
             return
         if rating < 1 or rating > 5:
-            await interaction.response.send_message(
+            await interaction.followup.send(
                 embed=error_embed("별점 오류", "별점은 1~5 사이 숫자로 입력해주세요."),
                 ephemeral=private_response,
             )
@@ -243,61 +250,75 @@ class ReviewsCog(commands.Cog):
 
         content = content.strip()
         if len(content) < 2:
-            await interaction.response.send_message(
+            await interaction.followup.send(
                 embed=error_embed("후기 오류", "후기 내용은 2자 이상 입력해주세요."),
                 ephemeral=private_response,
             )
             return
 
-        photo_filename = ""
-        photo_bytes = None
-        if photo is not None:
+        photos = list(photos or [])
+        if len(photos) > MAX_REVIEW_PHOTOS:
+            await interaction.followup.send(
+                embed=error_embed("사진 개수 오류", f"사진 리뷰는 최대 {MAX_REVIEW_PHOTOS}장까지 업로드할 수 있습니다."),
+                ephemeral=private_response,
+            )
+            return
+
+        photo_payloads: list[tuple[str, bytes]] = []
+        photo_docs: list[dict] = []
+        for index, photo in enumerate(photos, start=1):
             if not is_image_attachment(photo):
-                await interaction.response.send_message(
+                await interaction.followup.send(
                     embed=error_embed("파일 오류", "사진 리뷰는 이미지 파일만 업로드할 수 있습니다."),
                     ephemeral=private_response,
                 )
                 return
             if photo.size > MAX_REVIEW_PHOTO_BYTES:
-                await interaction.response.send_message(
+                await interaction.followup.send(
                     embed=error_embed("파일 용량 오류", "사진 리뷰는 8MB 이하로 업로드해주세요."),
                     ephemeral=private_response,
                 )
                 return
-            photo_filename = safe_photo_filename(photo)
+            photo_filename = safe_photo_filename(photo, index)
             try:
                 photo_bytes = await photo.read()
             except discord.HTTPException:
-                await interaction.response.send_message(
+                await interaction.followup.send(
                     embed=error_embed("파일 처리 실패", "사진 리뷰 파일을 읽지 못했습니다. 다시 시도해주세요."),
                     ephemeral=private_response,
                 )
                 return
+            photo_payloads.append((photo_filename, photo_bytes))
+            photo_docs.append(
+                {
+                    "filename": photo_filename,
+                    "content_type": photo.content_type or "",
+                    "size": int(photo.size or 0),
+                }
+            )
 
         doc = await self.repos.reviews.submit(
             review_id,
             interaction.user.id,
             rating=rating,
             content=content,
-            photo_filename=photo_filename,
-            photo_content_type=(photo.content_type or "") if photo else "",
-            photo_size=photo.size if photo else 0,
+            photos=photo_docs,
         )
         if doc is None:
-            await interaction.response.send_message(
+            await interaction.followup.send(
                 embed=error_embed("처리 실패", "후기를 저장하지 못했습니다. 다시 시도해주세요."),
                 ephemeral=private_response,
             )
             return
 
-        photo_file = discord.File(io.BytesIO(photo_bytes), filename=photo_filename) if photo_bytes is not None else None
-        await self.send_review_log(doc, photo_file=photo_file)
-        await interaction.response.send_message(
+        photo_files = [discord.File(io.BytesIO(payload), filename=filename) for filename, payload in photo_payloads]
+        await self.send_review_log(doc, photo_files=photo_files)
+        await interaction.followup.send(
             embed=success_embed("후기 등록 완료", "소중한 후기 감사합니다."),
             ephemeral=private_response,
         )
 
-    async def send_review_log(self, review: dict, *, photo_file: discord.File | None = None):
+    async def send_review_log(self, review: dict, *, photo_files: list[discord.File] | None = None):
         channel = await self.review_log_channel(review["guild_id"])
         if channel is None:
             return
@@ -315,11 +336,12 @@ class ReviewsCog(commands.Cog):
         embed.add_field(name="구매 시간", value=discord_time(review.get("purchased_at")), inline=True)
         embed.add_field(name="후기 작성 시간", value=discord_time(review.get("reviewed_at")), inline=True)
         try:
-            if photo_file is not None:
-                embed.set_image(url=attachment_image_url(photo_file.filename))
-                await channel.send(embed=embed, files=branded_files(photo_file))
+            photo_files = list(photo_files or [])
+            if photo_files:
+                embed.set_image(url=attachment_image_url(photo_files[0].filename))
+                await channel.send(embed=embed, files=branded_files(*photo_files))
                 return
-            await channel.send(**random_embed_gif_kwargs(embed, SUCCESS_GIFS))
+            await channel.send(embed=embed)
         except discord.HTTPException:
             return
 
@@ -344,6 +366,51 @@ class ReviewsCog(commands.Cog):
             )
             product = truncate(review.get("product_title") or "상품", 80)
             embed.add_field(name=f"{star_text(rating)} · {product}", value=value, inline=False)
+        return embed
+
+    def build_seller_rating_embed(
+        self,
+        *,
+        seller_id: int,
+        rating_doc: dict | None,
+        recent_reviews: list[dict],
+    ) -> discord.Embed:
+        seller_label = f"<@{seller_id}>"
+        if rating_doc is None or int(rating_doc.get("rating_count", 0) or 0) <= 0:
+            return info_embed("셀러 평점", f"{seller_label} 셀러의 등록된 평점이 없습니다.")
+
+        average = float(rating_doc.get("rating_average", 0) or 0)
+        rating_count = int(rating_doc.get("rating_count", 0) or 0)
+        embed = info_embed("셀러 평점", f"{seller_label} 셀러의 구매 후기 평점입니다.")
+        embed.add_field(name="평균 별점", value=f"{star_text(round(average))} `{average:.2f}/5`", inline=True)
+        embed.add_field(name="후기 수", value=f"`{rating_count}`개", inline=True)
+        if rating_doc.get("last_reviewed_at"):
+            embed.add_field(name="최근 후기", value=discord_time(rating_doc.get("last_reviewed_at")), inline=False)
+
+        if recent_reviews:
+            lines = []
+            for review in recent_reviews[:5]:
+                rating = int(review.get("rating", 0) or 0)
+                product = truncate(review.get("product_title") or "상품", 40)
+                content = truncate(review.get("content") or "-", 80)
+                lines.append(f"{star_text(rating)} `{product}` · {content}")
+            embed.add_field(name="최근 후기 내용", value="\n".join(lines)[:1024], inline=False)
+        return embed
+
+    def build_seller_rating_list_embed(self, stats: list[dict]) -> discord.Embed:
+        if not stats:
+            return info_embed("셀러 평점", "아직 등록된 셀러 평점이 없습니다.")
+
+        embed = info_embed("셀러 평점 순위", "평균 별점과 후기 수를 기준으로 표시합니다.")
+        lines = []
+        for index, stat in enumerate(stats[:10], start=1):
+            seller_id = int(stat.get("seller_id", 0) or 0)
+            average = float(stat.get("rating_average", 0) or 0)
+            rating_count = int(stat.get("rating_count", 0) or 0)
+            lines.append(
+                f"`{index}.` <@{seller_id}> · {star_text(round(average))} `{average:.2f}/5` · 후기 `{rating_count}`개"
+            )
+        embed.description = "\n".join(lines)
         return embed
 
     @app_commands.command(name="후기채널설정", description="구매 후기가 올라갈 채널을 설정합니다.")
@@ -378,6 +445,32 @@ class ReviewsCog(commands.Cog):
             title = "최근 구매 후기"
 
         await interaction.followup.send(embed=self.build_reviews_embed(title, reviews, category=category))
+
+    @app_commands.command(name="셀러평점", description="셀러별 평균 구매 후기 평점을 확인합니다.")
+    @app_commands.describe(셀러="조회할 셀러. 비우면 평점 순위를 표시합니다.")
+    async def seller_rating(self, interaction: discord.Interaction, 셀러: discord.Member | None = None):
+        await interaction.response.defer()
+        await self.ensure_review_store()
+        if not interaction.guild:
+            await interaction.followup.send(embed=error_embed("서버 전용", "셀러 평점은 서버 안에서만 사용할 수 있습니다."))
+            return
+
+        if 셀러 is not None:
+            rating_doc = await self.repos.reviews.get_seller_rating(interaction.guild.id, 셀러.id)
+            recent_reviews = await self.repos.reviews.list_by_seller(interaction.guild.id, 셀러.id, limit=5)
+            await interaction.followup.send(
+                embed=self.build_seller_rating_embed(
+                    seller_id=셀러.id,
+                    rating_doc=rating_doc,
+                    recent_reviews=recent_reviews,
+                )
+            )
+            return
+
+        stats = await self.repos.reviews.list_seller_ratings(interaction.guild.id, limit=10)
+        if not stats:
+            stats = await self.repos.reviews.rebuild_all_seller_ratings(interaction.guild.id, limit=10)
+        await interaction.followup.send(embed=self.build_seller_rating_list_embed(stats))
 
     async def autocomplete_categories(self, interaction: discord.Interaction, current: str):
         if not interaction.guild:

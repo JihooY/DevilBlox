@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from functools import lru_cache
+
 import discord
 
 from utils.assets import asset_path, has_asset
@@ -10,7 +12,7 @@ COLOR_INFO = 0x5865F2
 COLOR_DARK = 0x111111
 BRAND_NAME = "DEVIL BLOX"
 BRAND_LOGO_FOLDER = "logos"
-BRAND_LOGO_FILENAME = "devilblox_logo.png"
+BRAND_LOGO_FILENAME = "devilblox_icon.png"
 BRAND_LOGO_URL = f"attachment://{BRAND_LOGO_FILENAME}"
 _BRANDING_HOOKS_INSTALLED = False
 
@@ -20,10 +22,18 @@ def brand_embed(embed: discord.Embed) -> discord.Embed:
     return embed
 
 
-def brand_logo_file() -> discord.File | None:
+@lru_cache(maxsize=1)
+def _brand_logo_path() -> str | None:
     if not has_asset(BRAND_LOGO_FOLDER, BRAND_LOGO_FILENAME):
         return None
-    return discord.File(str(asset_path(BRAND_LOGO_FOLDER, BRAND_LOGO_FILENAME)), filename=BRAND_LOGO_FILENAME)
+    return str(asset_path(BRAND_LOGO_FOLDER, BRAND_LOGO_FILENAME))
+
+
+def brand_logo_file() -> discord.File | None:
+    path = _brand_logo_path()
+    if path is None:
+        return None
+    return discord.File(path, filename=BRAND_LOGO_FILENAME)
 
 
 def branded_files(*files: discord.File | None) -> list[discord.File]:
@@ -63,8 +73,11 @@ def _brand_embed_payload(kwargs: dict) -> dict:
     if kwargs.get("embeds"):
         kwargs["embeds"] = [brand_embed(embed) for embed in kwargs["embeds"]]
 
+    if _payload_has_logo_file(kwargs):
+        return kwargs
+
     logo = brand_logo_file()
-    if logo is None or _payload_has_logo_file(kwargs):
+    if logo is None:
         return kwargs
 
     if kwargs.get("files"):
