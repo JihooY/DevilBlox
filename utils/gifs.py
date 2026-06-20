@@ -6,6 +6,7 @@ from collections.abc import Iterable, Sequence
 import discord
 
 from utils.assets import asset_path, has_asset
+from utils.embeds import BRAND_LOGO_FILENAME, brand_embed, branded_files
 
 GifPool = str | Sequence[str]
 
@@ -204,9 +205,15 @@ def random_embed_gif_kwargs(embed: discord.Embed, candidates: GifPool) -> dict:
     filename = choose_gif(candidates)
     file = gif_file(filename)
     if filename is None or file is None:
-        return {"embed": embed}
+        files = branded_files()
+        if files:
+            return {"embed": brand_embed(embed), "files": files}
+        return {"embed": brand_embed(embed)}
     embed.set_image(url=f"attachment://{filename}")
-    return {"embed": embed, "file": file}
+    files = branded_files(file)
+    if files:
+        return {"embed": brand_embed(embed), "files": files}
+    return {"embed": brand_embed(embed)}
 
 
 def panel_embed_edit_kwargs(
@@ -219,10 +226,16 @@ def panel_embed_edit_kwargs(
     update = {"embed": embed}
     filename = choose_gif(candidates, message.attachments, force_new=force_new)
     if filename is None:
+        update["embed"] = brand_embed(embed)
         return update
     embed.set_image(url=f"attachment://{filename}")
-    if not any(attachment.filename == filename for attachment in message.attachments):
+    if (
+        not any(attachment.filename == filename for attachment in message.attachments)
+        or not any(attachment.filename == BRAND_LOGO_FILENAME for attachment in message.attachments)
+    ):
         file = gif_file(filename)
-        if file is not None:
-            update["attachments"] = [file]
+        attachments = branded_files(file)
+        if attachments:
+            update["attachments"] = attachments
+    update["embed"] = brand_embed(embed)
     return update

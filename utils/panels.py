@@ -4,6 +4,7 @@ import logging
 
 import discord
 
+from utils.embeds import BRAND_LOGO_FILENAME, brand_embed, branded_files
 from utils.gifs import GifPool, choose_gif, gif_file
 
 log = logging.getLogger(__name__)
@@ -65,11 +66,15 @@ async def restore_panel_message(
         image_filename = choose_gif(image_attachment_filename, message.attachments, force_new=rotate_image)
         if image_filename:
             embed.set_image(url=f"attachment://{image_filename}")
-            if not any(attachment.filename == image_filename for attachment in message.attachments):
+            if (
+                not any(attachment.filename == image_filename for attachment in message.attachments)
+                or not any(attachment.filename == BRAND_LOGO_FILENAME for attachment in message.attachments)
+            ):
                 file = gif_file(image_filename)
-                if file is not None:
-                    update["attachments"] = [file]
-        update["embed"] = embed
+                attachments = branded_files(file)
+                if attachments:
+                    update["attachments"] = attachments
+        update["embed"] = brand_embed(embed)
     if view is not None:
         update["view"] = view
     if not update:

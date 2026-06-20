@@ -66,23 +66,40 @@ class ReviewStore:
     async def get(self, review_id: str):
         return await self.collection.find_one({"_id": review_id})
 
-    async def submit(self, review_id: str, buyer_id: int, *, rating: int, content: str):
+    async def submit(
+        self,
+        review_id: str,
+        buyer_id: int,
+        *,
+        rating: int,
+        content: str,
+        photo_filename: str = "",
+        photo_content_type: str = "",
+        photo_size: int = 0,
+    ):
         now = _now()
+        updates = {
+            "status": "submitted",
+            "rating": int(rating),
+            "content": content.strip(),
+            "reviewed_at": now,
+            "updated_at": now,
+        }
+        if photo_filename:
+            updates.update(
+                {
+                    "photo_filename": photo_filename,
+                    "photo_content_type": photo_content_type,
+                    "photo_size": int(photo_size or 0),
+                }
+            )
         return await self.collection.find_one_and_update(
             {
                 "_id": review_id,
                 "buyer_id": buyer_id,
                 "status": "pending",
             },
-            {
-                "$set": {
-                    "status": "submitted",
-                    "rating": int(rating),
-                    "content": content.strip(),
-                    "reviewed_at": now,
-                    "updated_at": now,
-                }
-            },
+            {"$set": updates},
             return_document=ReturnDocument.AFTER,
         )
 

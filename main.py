@@ -12,6 +12,7 @@ from dotenv import load_dotenv
 
 from database import Repositories
 from database.mongo import MongoConfig, MongoRuntime
+from utils.embeds import install_branding_hooks
 
 ROOT_DIR = Path(__file__).resolve().parent
 COGS_DIR = ROOT_DIR / "cogs"
@@ -85,6 +86,7 @@ class DevilBloxBot(commands.Bot):
         self.repos: Repositories | None = None
 
     async def setup_hook(self):
+        install_branding_hooks()
         self.db = await self.mongo_runtime.connect()
         self.repos = Repositories(self.db)
         await self.repos.ensure_indexes()

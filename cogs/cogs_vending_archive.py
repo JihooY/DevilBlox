@@ -17,7 +17,14 @@ from database.vending import (
     VendingLogStore,
     normalize_product_id,
 )
-from utils.embeds import error_embed, info_embed, success_embed
+from utils.embeds import (
+    BRAND_LOGO_FILENAME,
+    BRAND_LOGO_URL,
+    branded_files,
+    error_embed,
+    info_embed,
+    success_embed,
+)
 from utils.gifs import (
     ARCHIVE_PANEL_GIFS,
     DENIED_GIFS,
@@ -44,6 +51,15 @@ def add_panel_gif(container: discord.ui.Container, filename: str | None, descrip
     container.add_item(
         discord.ui.MediaGallery(
             discord.MediaGalleryItem(f"attachment://{filename}", description=description)
+        )
+    )
+
+
+def add_brand_section(container: discord.ui.Container, content: str):
+    container.add_item(
+        discord.ui.Section(
+            discord.ui.TextDisplay(content),
+            accessory=discord.ui.Thumbnail(BRAND_LOGO_URL, description="DevilBlox logo"),
         )
     )
 
@@ -248,7 +264,7 @@ class VendingPanelView(discord.ui.LayoutView):
             )
 
         container = discord.ui.Container(accent_color=COLOR_VENDING)
-        container.add_item(discord.ui.TextDisplay("\n".join(lines)))
+        add_brand_section(container, "\n".join(lines))
         add_panel_gif(container, gif_name, "DevilBlox vending panel")
         container.add_item(discord.ui.Separator())
 
@@ -301,7 +317,7 @@ class ArchivePanelView(discord.ui.LayoutView):
         super().__init__(timeout=None)
         self.cog = cog
         container = discord.ui.Container(accent_color=COLOR_ARCHIVE)
-        container.add_item(discord.ui.TextDisplay("## ARCHIVE\n유튜브 영상 URL로 영상에 사용된 상품을 검색할 수 있습니다."))
+        add_brand_section(container, "## ARCHIVE\n유튜브 영상 URL로 영상에 사용된 상품을 검색할 수 있습니다.")
         add_panel_gif(container, gif_name, "DevilBlox archive panel")
         container.add_item(discord.ui.Separator())
         search_button = discord.ui.Button(
@@ -373,7 +389,7 @@ class CategoryMenuView(discord.ui.LayoutView):
         super().__init__(timeout=180)
         title = "상품 구매" if mode == "buy" else "상품 목록"
         container = discord.ui.Container(accent_color=COLOR_VENDING)
-        container.add_item(discord.ui.TextDisplay(f"## {title}\n카테고리를 선택하면 해당 카테고리의 상품이 표시됩니다."))
+        add_brand_section(container, f"## {title}\n카테고리를 선택하면 해당 카테고리의 상품이 표시됩니다.")
         container.add_item(discord.ui.Separator())
         container.add_item(discord.ui.ActionRow(CategorySelect(cog, categories, mode)))
         self.add_item(container)
@@ -429,7 +445,7 @@ class ProductMenuView(discord.ui.LayoutView):
                 lines.append(f"- 외 {len(products) - 10}개")
 
         container = discord.ui.Container(accent_color=COLOR_VENDING)
-        container.add_item(discord.ui.TextDisplay("\n".join(lines)))
+        add_brand_section(container, "\n".join(lines))
         container.add_item(discord.ui.Separator())
         container.add_item(discord.ui.ActionRow(ProductSelect(cog, products, mode)))
         self.add_item(container)
@@ -452,7 +468,7 @@ class ProductDetailView(discord.ui.LayoutView):
             lines.append("이미 구매한 상품입니다. 다운로드 버튼으로 링크를 다시 받을 수 있습니다.")
 
         container = discord.ui.Container(accent_color=COLOR_VENDING)
-        container.add_item(discord.ui.TextDisplay("\n".join(lines)))
+        add_brand_section(container, "\n".join(lines))
         container.add_item(discord.ui.Separator())
         buy_button = discord.ui.Button(
             label="구매하기" if not owned else "다운로드",
@@ -499,7 +515,7 @@ class DownloadSelectView(discord.ui.LayoutView):
     def __init__(self, cog: "VendingArchiveCog", owned_products: list[dict]):
         super().__init__(timeout=180)
         container = discord.ui.Container(accent_color=COLOR_VENDING)
-        container.add_item(discord.ui.TextDisplay("## 다운로드\n링크를 다시 받을 상품을 하나 이상 선택하세요."))
+        add_brand_section(container, "## 다운로드\n링크를 다시 받을 상품을 하나 이상 선택하세요.")
         container.add_item(discord.ui.Separator())
         container.add_item(discord.ui.ActionRow(DownloadSelect(cog, owned_products)))
         self.add_item(container)
@@ -1020,7 +1036,7 @@ class VendingArchiveCog(commands.Cog):
                 ephemeral=True,
             )
             return
-        await interaction.followup.send(view=CategoryMenuView(self, categories, mode), ephemeral=True)
+        await interaction.followup.send(view=CategoryMenuView(self, categories, mode), files=branded_files(), ephemeral=True)
 
     async def handle_category_selected(self, interaction: discord.Interaction, category_id_lower: str, mode: str):
         await interaction.response.defer(ephemeral=True)
@@ -1038,7 +1054,11 @@ class VendingArchiveCog(commands.Cog):
                 ephemeral=True,
             )
             return
-        await interaction.followup.send(view=ProductMenuView(self, category, products, mode), ephemeral=True)
+        await interaction.followup.send(
+            view=ProductMenuView(self, category, products, mode),
+            files=branded_files(),
+            ephemeral=True,
+        )
 
     async def handle_product_selected(self, interaction: discord.Interaction, product_id_lower: str, mode: str):
         await interaction.response.defer(ephemeral=True)
@@ -1053,7 +1073,11 @@ class VendingArchiveCog(commands.Cog):
         if mode == "catalog":
             await interaction.followup.send(embed=self.build_product_embed(product), ephemeral=True)
             return
-        await interaction.followup.send(view=ProductDetailView(self, product, owned=owned), ephemeral=True)
+        await interaction.followup.send(
+            view=ProductDetailView(self, product, owned=owned),
+            files=branded_files(),
+            ephemeral=True,
+        )
 
     async def handle_purchase(self, interaction: discord.Interaction, product_id: str):
         await interaction.response.defer(ephemeral=True)
@@ -1144,6 +1168,7 @@ class VendingArchiveCog(commands.Cog):
             return
         await interaction.followup.send(
             view=DownloadSelectView(self, owned),
+            files=branded_files(),
             ephemeral=True,
         )
 
@@ -1256,10 +1281,15 @@ class VendingArchiveCog(commands.Cog):
             image_filename = choose_gif(image_attachment_filename, message.attachments, force_new=rotate_image)
             panel_view = view(image_filename) if callable(view) else view
             update = {"content": None, "embeds": [], "view": panel_view}
-            if image_filename and not any(attachment.filename == image_filename for attachment in message.attachments):
-                file = gif_file(image_filename)
-                if file is not None:
-                    update["attachments"] = [file]
+            needs_logo = not any(attachment.filename == BRAND_LOGO_FILENAME for attachment in message.attachments)
+            needs_image = bool(image_filename) and not any(
+                attachment.filename == image_filename for attachment in message.attachments
+            )
+            if needs_logo or needs_image:
+                file = gif_file(image_filename) if image_filename else None
+                attachments = branded_files(file)
+                if attachments:
+                    update["attachments"] = attachments
             await message.edit(**update)
         except discord.NotFound:
             await self.repos.settings.set_value(guild.id, "meta", meta_key, None)
@@ -1275,8 +1305,9 @@ class VendingArchiveCog(commands.Cog):
         image_filename = choose_gif(VENDING_PANEL_GIFS)
         file = gif_file(image_filename)
         kwargs = {"view": await self.build_vending_panel_view(interaction.guild.id, image_filename)}
-        if file is not None:
-            kwargs["file"] = file
+        files = branded_files(file)
+        if files:
+            kwargs["files"] = files
         message = await interaction.channel.send(**kwargs)
         await save_panel_location(
             self.repos,
@@ -1296,8 +1327,9 @@ class VendingArchiveCog(commands.Cog):
         image_filename = choose_gif(ARCHIVE_PANEL_GIFS)
         file = gif_file(image_filename)
         kwargs = {"view": ArchivePanelView(self, gif_name=image_filename)}
-        if file is not None:
-            kwargs["file"] = file
+        files = branded_files(file)
+        if files:
+            kwargs["files"] = files
         message = await interaction.channel.send(**kwargs)
         await save_panel_location(
             self.repos,
@@ -1513,7 +1545,11 @@ class VendingArchiveCog(commands.Cog):
             if not categories:
                 await interaction.followup.send(embed=error_embed("카테고리 없음", "`/상품카테고리등록`으로 먼저 등록해주세요."), ephemeral=True)
                 return
-            await interaction.followup.send(view=CategoryMenuView(self, categories, "catalog"), ephemeral=True)
+            await interaction.followup.send(
+                view=CategoryMenuView(self, categories, "catalog"),
+                files=branded_files(),
+                ephemeral=True,
+            )
             return
 
         category = await self.repos.product_categories.get(interaction.guild.id, category_id)
@@ -1524,7 +1560,11 @@ class VendingArchiveCog(commands.Cog):
         if not products:
             await interaction.followup.send(embed=error_embed("상품 없음", "이 카테고리에 등록된 판매 상품이 없습니다."), ephemeral=True)
             return
-        await interaction.followup.send(view=ProductMenuView(self, category, products, "catalog"), ephemeral=True)
+        await interaction.followup.send(
+            view=ProductMenuView(self, category, products, "catalog"),
+            files=branded_files(),
+            ephemeral=True,
+        )
 
     @app_commands.command(name="잔액조회", description="자판기 충전 잔액을 확인합니다.")
     @app_commands.default_permissions(send_messages=True)
