@@ -9,6 +9,7 @@ dependencies = [
     "motor>=3.6.0",
     "pillow>=10.0.0",
     "python-dotenv>=1.0.1",
+    "rich>=14.0.0",
     "sshtunnel>=0.4.0",
 ]
 
