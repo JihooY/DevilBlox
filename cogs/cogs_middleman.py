@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+
 import discord
 from discord import app_commands
 from discord.ext import commands, tasks
@@ -9,7 +11,7 @@ from utils.gifs import PANEL_GIFS, TICKET_CLOSE_GIFS, TICKET_OPEN_GIFS, random_e
 from utils.panels import restore_panel_message, save_panel_location
 from utils.permissions import deny_ticket_access, move_to_category
 from utils.roles import has_role
-from utils.tickets import safe_channel_name
+from utils.tickets import collect_channel_transcript, safe_channel_name
 
 
 async def fetch_member(guild: discord.Guild, user_id: int) -> discord.Member | None:
@@ -269,7 +271,8 @@ class MiddlemanCog(commands.Cog):
         await interaction.response.send_message(embed=success_embed("중개 패널 생성 완료"), ephemeral=True)
 
     @app_commands.command(name="중개종료", description="현재 중개 티켓을 종료하고 거래 기록을 저장합니다.")
-    async def close_middleman(self, interaction: discord.Interaction, 금액: int):
+    @app_commands.describe(채널삭제="종료 처리 후 티켓 채널을 삭제할지 여부")
+    async def close_middleman(self, interaction: discord.Interaction, 금액: int, 채널삭제: bool = False):
         await interaction.response.defer(ephemeral=True)
         if not await self._middleman_allowed(interaction):
             await interaction.followup.send(embed=error_embed("권한 없음", "중개자 권한이 필요합니다."), ephemeral=True)
@@ -314,9 +317,17 @@ class MiddlemanCog(commands.Cog):
             embed.add_field(name="중개자", value=interaction.user.mention, inline=False)
             await log_channel.send(embed=embed)
 
-        embed = success_embed("중개 종료", f"금액: {금액:,}원")
+        delete_notice = "\n10초 후 채널이 삭제됩니다." if 채널삭제 else "\n채널은 삭제하지 않고 유지됩니다."
+        embed = success_embed("중개 종료", f"금액: {금액:,}원{delete_notice}")
         await interaction.channel.send(**random_embed_gif_kwargs(embed, TICKET_CLOSE_GIFS))
-        await interaction.followup.send(embed=success_embed("중개 티켓 종료 완료"), ephemeral=True)
+        if 채널삭제:
+            transcript = await collect_channel_transcript(interaction.channel)
+            await self.repos.tickets.save_transcript(ticket, transcript)
+        followup_notice = "10초 후 채널이 삭제됩니다." if 채널삭제 else "채널은 삭제하지 않고 유지됩니다."
+        await interaction.followup.send(embed=success_embed("중개 티켓 종료 완료", followup_notice), ephemeral=True)
+        if 채널삭제:
+            await asyncio.sleep(10)
+            await interaction.channel.delete(reason="DevilBlox middleman ticket closed")
 
 
 async def setup(bot: commands.Bot):

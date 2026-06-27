@@ -9,18 +9,20 @@ from discord import app_commands
 from discord.ext import commands, tasks
 
 from database.stock import normalize_stock_id
-from utils.embeds import error_embed, info_embed, success_embed
+from utils.embeds import BRAND_LOGO_FILENAME, branded_files, embed_kwargs, error_embed, info_embed, success_embed
 from utils.gifs import (
-    STOCK_CONDITION_GIFS,
-    STOCK_CONTROL_GIFS,
     SUCCESS_GIFS,
-    panel_embed_edit_kwargs,
     random_embed_gif_kwargs,
 )
 from utils.panels import save_panel_location
 from utils.roles import has_role
 
 log = logging.getLogger(__name__)
+
+
+def stock_panel_attachments(message: discord.Message) -> list[discord.Attachment | discord.File]:
+    logo_attachments = [attachment for attachment in message.attachments if attachment.filename == BRAND_LOGO_FILENAME]
+    return logo_attachments or branded_files()
 
 
 def parse_quantity(value: str) -> int | None:
@@ -297,7 +299,7 @@ class StockCog(commands.Cog):
             message = await channel.fetch_message(message_id)
             await self.repos.settings.set_value(guild.id, "meta", "stock_condition_reset_at", reset_at)
             embed = await self.build_stock_condition_embed(guild, reset_at=reset_at)
-            await message.edit(**panel_embed_edit_kwargs(embed, message, STOCK_CONDITION_GIFS, force_new=rotate_image))
+            await message.edit(embed=embed, attachments=stock_panel_attachments(message))
         except discord.NotFound:
             await self.repos.settings.set_value(guild.id, "meta", "stock_condition_message_id", None)
         except discord.HTTPException:
@@ -321,9 +323,7 @@ class StockCog(commands.Cog):
         try:
             message = await channel.fetch_message(message_id)
             embed, view = await self.build_stock_control_payload(guild, selected_item_id)
-            update = panel_embed_edit_kwargs(embed, message, STOCK_CONTROL_GIFS, force_new=rotate_image)
-            update["view"] = view
-            await message.edit(**update)
+            await message.edit(embed=embed, view=view, attachments=stock_panel_attachments(message))
         except discord.NotFound:
             await self.repos.settings.set_value(guild.id, "meta", "stock_control_message_id", None)
         except discord.HTTPException:
@@ -332,9 +332,11 @@ class StockCog(commands.Cog):
     async def update_control_message(self, interaction: discord.Interaction, selected_item_id: str | None = None):
         embed, view = await self.build_stock_control_payload(interaction.guild, selected_item_id)
         if interaction.message is not None:
-            update = panel_embed_edit_kwargs(embed, interaction.message, STOCK_CONTROL_GIFS)
-            update["view"] = view
-            await interaction.message.edit(**update)
+            await interaction.message.edit(
+                embed=embed,
+                view=view,
+                attachments=stock_panel_attachments(interaction.message),
+            )
             return
         await self.refresh_stock_control_panel(interaction.guild, selected_item_id)
 
@@ -468,7 +470,7 @@ class StockCog(commands.Cog):
         await interaction.response.defer(ephemeral=True)
         reset_at = int(time.time())
         embed = await self.build_stock_condition_embed(interaction.guild, reset_at=reset_at)
-        message = await interaction.channel.send(**random_embed_gif_kwargs(embed, STOCK_CONDITION_GIFS))
+        message = await interaction.channel.send(**embed_kwargs(embed))
         await save_panel_location(
             self.repos,
             interaction.guild.id,
@@ -488,7 +490,7 @@ class StockCog(commands.Cog):
             await interaction.followup.send(embed=error_embed("권한 없음", "셀러 또는 관리자 권한이 필요합니다."), ephemeral=True)
             return
         embed, view = await self.build_stock_control_payload(interaction.guild)
-        message = await interaction.channel.send(**random_embed_gif_kwargs(embed, STOCK_CONTROL_GIFS), view=view)
+        message = await interaction.channel.send(**embed_kwargs(embed), view=view)
         await save_panel_location(
             self.repos,
             interaction.guild.id,

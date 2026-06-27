@@ -178,7 +178,8 @@ class SupportCog(commands.Cog):
         await interaction.response.send_message(embed=success_embed("문의 패널 생성 완료"), ephemeral=True)
 
     @app_commands.command(name="문의종료", description="현재 문의 티켓을 종료합니다.")
-    async def close_support(self, interaction: discord.Interaction):
+    @app_commands.describe(채널삭제="종료 처리 후 티켓 채널을 삭제할지 여부")
+    async def close_support(self, interaction: discord.Interaction, 채널삭제: bool = True):
         await interaction.response.defer(ephemeral=True)
         if not await self._admin_allowed(interaction):
             await interaction.followup.send(embed=error_embed("권한 없음", "관리자 권한이 필요합니다."), ephemeral=True)
@@ -191,14 +192,17 @@ class SupportCog(commands.Cog):
         member = interaction.guild.get_member(ticket["user_id"])
         if member:
             await deny_ticket_access(interaction.channel, member)
-        embed = success_embed("문의 종료", "대화 기록을 저장한 뒤 10초 후 채널이 자동 삭제됩니다.")
+        delete_notice = "대화 기록을 저장한 뒤 10초 후 채널이 자동 삭제됩니다." if 채널삭제 else "대화 기록을 저장하고 채널은 유지됩니다."
+        embed = success_embed("문의 종료", delete_notice)
         await interaction.channel.send(**random_embed_gif_kwargs(embed, TICKET_CLOSE_GIFS))
         transcript = await self._collect_transcript(interaction.channel)
         await self.repos.tickets.save_transcript(ticket, transcript)
         await self.repos.tickets.close(interaction.guild.id, interaction.channel_id, closed_by=interaction.user.id)
-        await interaction.followup.send(embed=success_embed("문의 티켓 종료 완료", "10초 후 채널이 삭제됩니다."), ephemeral=True)
-        await asyncio.sleep(10)
-        await interaction.channel.delete(reason="DevilBlox support ticket closed and transcript saved")
+        followup_notice = "10초 후 채널이 삭제됩니다." if 채널삭제 else "채널은 삭제하지 않고 유지됩니다."
+        await interaction.followup.send(embed=success_embed("문의 티켓 종료 완료", followup_notice), ephemeral=True)
+        if 채널삭제:
+            await asyncio.sleep(10)
+            await interaction.channel.delete(reason="DevilBlox support ticket closed and transcript saved")
 
     @app_commands.command(name="유저추가", description="현재 티켓 채널에 유저를 추가합니다.")
     async def add_user(self, interaction: discord.Interaction, 유저: discord.Member):

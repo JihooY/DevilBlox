@@ -436,8 +436,16 @@ class PurchaseCog(commands.Cog):
         상품명="구매 완료된 상품명",
         금액="구매 금액",
         category_id="후기 검색에 사용할 상품 카테고리 ID",
+        채널삭제="종료 처리 후 티켓 채널을 삭제할지 여부",
     )
-    async def close_purchase_ticket(self, interaction: discord.Interaction, 상품명: str, 금액: int, category_id: str = ""):
+    async def close_purchase_ticket(
+        self,
+        interaction: discord.Interaction,
+        상품명: str,
+        금액: int,
+        category_id: str = "",
+        채널삭제: bool = True,
+    ):
         await interaction.response.defer(ephemeral=True)
         if not await self._seller_allowed(interaction):
             await interaction.followup.send(embed=error_embed("권한 없음", "셀러 권한이 필요합니다."), ephemeral=True)
@@ -471,9 +479,10 @@ class PurchaseCog(commands.Cog):
         if seller:
             await deny_ticket_access(channel, seller)
 
+        delete_notice = "대화 기록을 저장한 뒤 10초 후 채널이 자동 삭제됩니다." if 채널삭제 else "대화 기록을 저장하고 채널은 유지됩니다."
         embed = success_embed(
             "구매 티켓 종료",
-            f"상품명: {상품명}\n금액: {금액:,}원\n대화 기록을 저장한 뒤 10초 후 채널이 자동 삭제됩니다.",
+            f"상품명: {상품명}\n금액: {금액:,}원\n{delete_notice}",
         )
         await channel.send(**random_embed_gif_kwargs(embed, TICKET_CLOSE_GIFS))
         transcript = await collect_channel_transcript(channel)
@@ -524,9 +533,11 @@ class PurchaseCog(commands.Cog):
                     amount=금액,
                 )
 
-        await interaction.followup.send(embed=success_embed("구매 티켓 종료 완료", "10초 후 채널이 삭제됩니다."), ephemeral=True)
-        await asyncio.sleep(10)
-        await channel.delete(reason="DevilBlox purchase ticket closed and transcript saved")
+        followup_notice = "10초 후 채널이 삭제됩니다." if 채널삭제 else "채널은 삭제하지 않고 유지됩니다."
+        await interaction.followup.send(embed=success_embed("구매 티켓 종료 완료", followup_notice), ephemeral=True)
+        if 채널삭제:
+            await asyncio.sleep(10)
+            await channel.delete(reason="DevilBlox purchase ticket closed and transcript saved")
 
     @close_purchase_ticket.autocomplete("category_id")
     async def close_purchase_category_autocomplete(self, interaction: discord.Interaction, current: str):

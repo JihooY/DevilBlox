@@ -1,4 +1,5 @@
 from .coupons import CouponStore
+from .lottery import LotteryStore
 from .reviews import ReviewStore
 from .settings import GuildSettingsStore
 from .stock import StockStore
@@ -15,6 +16,7 @@ class Repositories:
         self.sellers = SellerStore(db)
         self.middlemen = MiddlemanStore(db)
         self.coupons = CouponStore(db)
+        self.lottery = LotteryStore(db)
         self.product_categories = ProductCategoryStore(db)
         self.products = ProductStore(db)
         self.archives = ArchiveStore(db)
@@ -30,6 +32,7 @@ class Repositories:
             self.sellers,
             self.middlemen,
             self.coupons,
+            self.lottery,
             self.product_categories,
             self.products,
             self.archives,
