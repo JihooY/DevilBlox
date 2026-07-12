@@ -147,10 +147,25 @@ class PurchasePanelView(discord.ui.View):
         )
 
 
+class PurchaseTicketView(discord.ui.View):
+    def __init__(self, cog: "PurchaseCog"):
+        super().__init__(timeout=None)
+        self.cog = cog
+
+    @discord.ui.button(
+        label="계좌 확인",
+        style=discord.ButtonStyle.primary,
+        custom_id="devilblox:purchase:account",
+    )
+    async def account(self, interaction: discord.Interaction, _: discord.ui.Button):
+        await self.cog.show_ticket_payment_account(interaction)
+
+
 class PurchaseCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
         self.bot.add_view(PurchasePanelView(self, []))
+        self.bot.add_view(PurchaseTicketView(self))
 
     async def cog_load(self):
         self.purchase_panel_loop.start()
@@ -257,6 +272,17 @@ class PurchaseCog(commands.Cog):
     async def open_purchase_ticket(self, interaction: discord.Interaction, seller_id: int):
         await interaction.response.defer(ephemeral=True)
         guild = interaction.guild
+        if guild is None:
+            await interaction.followup.send(embed=error_embed("처리 실패", "서버 안에서만 사용할 수 있습니다."), ephemeral=True)
+            return
+
+        if hasattr(self.repos, "warnings"):
+            warning_doc = await self.repos.warnings.get(guild.id, interaction.user.id)
+            if warning_doc and warning_doc.get("blocked"):
+                reason = warning_doc.get("block_reason") or "관리자에 의해 구매가 차단되었습니다."
+                await interaction.followup.send(embed=error_embed("구매 차단", reason[:4096]), ephemeral=True)
+                return
+
         seller_doc = await self.repos.sellers.get(guild.id, seller_id)
         if seller_doc is None:
             await interaction.followup.send(embed=error_embed("셀러 오류", "등록되지 않은 셀러입니다."), ephemeral=True)
@@ -305,21 +331,74 @@ class PurchaseCog(commands.Cog):
             channel.id,
             seller_id=seller.id,
         )
-        
+
         await self.add_seller_current_ticket(guild.id, seller.id, channel.id)
         await self.refresh_ticket_condition_panel(guild)
 
-        account = (seller_doc.get("payment_account") or "").strip()
-        account_value = account or "아직 등록된 셀러 계좌가 없습니다. 셀러에게 계좌 안내를 요청해주세요."
         embed = info_embed("PURCHASE", f"{interaction.user.mention}님이 {seller.mention} 셀러 구매 티켓을 열었습니다.")
         embed.add_field(name="셀러", value=seller.mention, inline=True)
         embed.add_field(name="구매자", value=interaction.user.mention, inline=True)
-        embed.add_field(name="입금 계좌", value=account_value[:1024], inline=False)
+        embed.add_field(name="입금 계좌", value="아래 `계좌 확인` 버튼을 누르면 본인에게만 표시됩니다.", inline=False)
+        ticket_kwargs = random_embed_gif_kwargs(embed, TICKET_OPEN_GIFS)
+        ticket_kwargs["view"] = PurchaseTicketView(self)
         await channel.send(
             content=f"{interaction.user.mention} {seller.mention}",
-            **random_embed_gif_kwargs(embed, TICKET_OPEN_GIFS),
+            **ticket_kwargs,
         )
         await interaction.followup.send(embed=success_embed("구매 티켓 생성 완료", channel.mention), ephemeral=True)
+
+    async def build_seller_payment_account_embed(
+        self,
+        guild: discord.Guild,
+        seller_id: int,
+    ) -> discord.Embed | None:
+        seller_doc = await self.repos.sellers.get(guild.id, seller_id)
+        if seller_doc is None:
+            return None
+
+        seller = await fetch_member(guild, seller_id)
+        seller_label = seller.mention if seller else f"<@{seller_id}>"
+        account = (seller_doc.get("payment_account") or "").strip()
+        account_value = account or "아직 등록된 셀러 계좌가 없습니다. 셀러에게 계좌 안내를 요청해주세요."
+        embed = info_embed("계좌 확인", "이 계좌 정보는 본인에게만 표시됩니다.")
+        embed.add_field(name="셀러", value=seller_label, inline=False)
+        embed.add_field(name="입금 계좌", value=account_value[:1024], inline=False)
+        return embed
+
+    async def send_seller_payment_account(self, interaction: discord.Interaction, seller_id: int):
+        if not interaction.response.is_done():
+            await interaction.response.defer(ephemeral=True)
+        if not interaction.guild:
+            await interaction.followup.send(embed=error_embed("처리 실패", "서버 안에서만 사용할 수 있습니다."), ephemeral=True)
+            return
+
+        embed = await self.build_seller_payment_account_embed(interaction.guild, seller_id)
+        if embed is None:
+            await interaction.followup.send(embed=error_embed("셀러 없음", "등록된 셀러를 찾을 수 없습니다."), ephemeral=True)
+            return
+        await interaction.followup.send(embed=embed, ephemeral=True)
+
+    async def show_ticket_payment_account(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
+        if not interaction.guild:
+            await interaction.followup.send(embed=error_embed("처리 실패", "서버 안에서만 사용할 수 있습니다."), ephemeral=True)
+            return
+
+        ticket = await self.repos.tickets.get_by_channel(interaction.guild.id, interaction.channel_id, "purchase")
+        if not ticket or ticket.get("status") != "open":
+            await interaction.followup.send(embed=error_embed("티켓 오류", "열려있는 구매 티켓에서만 계좌를 확인할 수 있습니다."), ephemeral=True)
+            return
+
+        allowed_user_ids = {int(ticket.get("user_id") or 0), int(ticket.get("seller_id") or 0)}
+        if interaction.user.id not in allowed_user_ids and not await self._admin_allowed(interaction):
+            await interaction.followup.send(embed=error_embed("권한 없음", "이 티켓 참여자만 계좌를 확인할 수 있습니다."), ephemeral=True)
+            return
+
+        seller_id = ticket.get("seller_id")
+        if not seller_id:
+            await interaction.followup.send(embed=error_embed("셀러 없음", "이 티켓의 셀러 정보를 찾을 수 없습니다."), ephemeral=True)
+            return
+        await self.send_seller_payment_account(interaction, int(seller_id))
 
     async def show_seller_rating(self, interaction: discord.Interaction, seller_id: int):
         await interaction.response.defer(ephemeral=True)
@@ -604,7 +683,13 @@ class PurchaseCog(commands.Cog):
             allowed_mentions=discord.AllowedMentions(roles=True, users=False, everyone=False),
         )
 
-    @app_commands.command(name="계좌등록", description="구매 티켓에 자동 표시할 셀러 계좌를 등록하거나 수정합니다.")
+    @app_commands.command(name="계좌확인", description="원하는 셀러의 계좌 정보를 본인에게만 확인합니다.")
+    @app_commands.default_permissions(send_messages=True)
+    @app_commands.describe(셀러="계좌를 확인할 셀러")
+    async def check_seller_payment_account(self, interaction: discord.Interaction, 셀러: discord.Member):
+        await self.send_seller_payment_account(interaction, 셀러.id)
+
+    @app_commands.command(name="계좌등록", description="계좌 확인 버튼/명령어로 표시할 셀러 계좌를 등록하거나 수정합니다.")
     @app_commands.default_permissions(send_messages=True)
     @app_commands.describe(
         계좌정보="예: 국민 123456-78-901234 홍길동",
@@ -632,7 +717,7 @@ class PurchaseCog(commands.Cog):
 
         await self.repos.sellers.upsert(interaction.guild.id, target.id, target.display_name)
         await self.repos.sellers.set_payment_account(interaction.guild.id, target.id, 계좌정보)
-        embed = success_embed("계좌 등록 완료", f"{target.mention} 티켓에 자동 표시됩니다.")
+        embed = success_embed("계좌 등록 완료", f"{target.mention} 계좌 확인 버튼/명령어로 표시됩니다.")
         await interaction.followup.send(
             **random_embed_gif_kwargs(embed, SUCCESS_GIFS),
             ephemeral=True,

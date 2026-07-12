@@ -6,6 +6,7 @@ from .stock import StockStore
 from .tickets import MiddlemanStore, SellerStore, TicketStore
 from .users import UserStore
 from .vending import ArchiveStore, ProductCategoryStore, ProductStore, VendingLogStore
+from .warnings import WarningStore
 
 
 class Repositories:
@@ -23,6 +24,7 @@ class Repositories:
         self.vending = VendingLogStore(db)
         self.stock = StockStore(db)
         self.reviews = ReviewStore(db)
+        self.warnings = WarningStore(db)
 
     async def ensure_indexes(self):
         stores = (
@@ -39,6 +41,7 @@ class Repositories:
             self.vending,
             self.stock,
             self.reviews,
+            self.warnings,
         )
         for store in stores:
             await store.ensure_indexes()

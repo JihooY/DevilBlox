@@ -35,6 +35,7 @@ CHANNEL_KEYS = {
     "seller_announce": "셀러 공지",
     "ticket_condition": "티켓 현황",
     "ticket_state_log": "티켓 상태 로그",
+    "warning_log": "경고 로그",
     "stock_condition": "재고 현황",
     "stock_control": "재고 컨트롤",
     "vending": "자판기 패널",

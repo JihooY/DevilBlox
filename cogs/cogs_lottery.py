@@ -24,6 +24,14 @@ def panel_attachments(message: discord.Message) -> list[discord.Attachment | dis
     return logo_attachments or branded_files()
 
 
+def add_large_lottery_icon(container: discord.ui.Container):
+    container.add_item(
+        discord.ui.MediaGallery(
+            discord.MediaGalleryItem(BRAND_LOGO_URL, description="DevilBlox lottery icon")
+        )
+    )
+
+
 def draw_winning_shapes(rng: secrets.SystemRandom) -> list[str]:
     shape = rng.choice(SHAPES)
     return [shape, shape, shape]
@@ -77,21 +85,19 @@ class LotteryEntryView(discord.ui.LayoutView):
 
         container = discord.ui.Container(accent_color=COLOR_LOTTERY)
         container.add_item(
-            discord.ui.Section(
-                discord.ui.TextDisplay(
-                    "\n".join(
-                        [
-                            "## SHAPE LOTTERY",
-                            f"**{title}**",
-                            f"추첨번호: `{lottery_id}`",
-                            f"상태: `{status_text}` · 신청자 `{entry_count}`명 · 당첨 예정 `{winner_count}`명",
-                            "신청 후 마감되면 `/복권까기`로 복권을 열 수 있습니다.",
-                        ]
-                    )
-                ),
-                accessory=discord.ui.Thumbnail(BRAND_LOGO_URL, description="DevilBlox logo"),
+            discord.ui.TextDisplay(
+                "\n".join(
+                    [
+                        "## SHAPE LOTTERY",
+                        f"**{title}**",
+                        f"추첨번호: `{lottery_id}`",
+                        f"상태: `{status_text}` · 신청자 `{entry_count}`명 · 당첨 예정 `{winner_count}`명",
+                        "신청 후 마감되면 `/복권까기`로 복권을 열 수 있습니다.",
+                    ]
+                )
             )
         )
+        add_large_lottery_icon(container)
         container.add_item(discord.ui.Separator())
 
         enter_button = discord.ui.Button(
@@ -125,22 +131,20 @@ class LotteryTicketRevealView(discord.ui.LayoutView):
 
         container = discord.ui.Container(accent_color=accent_color)
         container.add_item(
-            discord.ui.Section(
-                discord.ui.TextDisplay(
-                    "\n".join(
-                        [
-                            "## SHAPE LOTTERY",
-                            f"**{title}**",
-                            f"`{format_reveal_slots(shapes, self.revealed_count)}`",
-                            f"{self.revealed_count}/3",
-                            reveal_status_text(self.revealed_count, is_winner),
-                            f"추첨: {event.get('title', '도형 복권 추첨')} (`{event['_id']}`)",
-                        ]
-                    )
-                ),
-                accessory=discord.ui.Thumbnail(BRAND_LOGO_URL, description="DevilBlox logo"),
+            discord.ui.TextDisplay(
+                "\n".join(
+                    [
+                        "## SHAPE LOTTERY",
+                        f"**{title}**",
+                        f"`{format_reveal_slots(shapes, self.revealed_count)}`",
+                        f"{self.revealed_count}/3",
+                        reveal_status_text(self.revealed_count, is_winner),
+                        f"추첨: {event.get('title', '도형 복권 추첨')} (`{event['_id']}`)",
+                    ]
+                )
             )
         )
+        add_large_lottery_icon(container)
         container.add_item(discord.ui.Separator())
 
         if self.revealed_count == 0:
@@ -166,6 +170,69 @@ class LotteryTicketRevealView(discord.ui.LayoutView):
             await interaction.response.send_message("이 복권은 본인만 열 수 있습니다.", ephemeral=True)
             return
         await self.cog.handle_ticket_reveal(
+            interaction,
+            self.event,
+            self.entry,
+            self.user_id,
+            self.revealed_count + 1,
+        )
+
+
+def lottery_ticket_embed(event: dict, entry: dict, revealed_count: int) -> discord.Embed:
+    revealed_count = max(0, min(3, int(revealed_count)))
+    shapes = list(entry.get("shapes") or [])
+    is_complete = revealed_count >= 3
+    is_winner = bool(entry.get("is_winner"))
+    title = "당첨!" if is_complete and is_winner else "아쉽게도 꽝" if is_complete else "복권 개봉"
+    description = "\n".join(
+        [
+            f"`{format_reveal_slots(shapes, revealed_count)}`",
+            f"{revealed_count}/3",
+            reveal_status_text(revealed_count, is_winner),
+        ]
+    )
+    if is_complete and is_winner:
+        embed = success_embed(title, description)
+    elif is_complete:
+        embed = error_embed(title, description)
+    else:
+        embed = info_embed(title, description)
+    embed.add_field(name="추첨", value=f"{event.get('title', '도형 복권 추첨')} (`{event['_id']}`)", inline=False)
+    embed.set_image(url=BRAND_LOGO_URL)
+    return embed
+
+
+class LotteryTicketButtonView(discord.ui.View):
+    def __init__(self, cog: "LotteryCog", event: dict, entry: dict, user_id: int, revealed_count: int = 0):
+        super().__init__(timeout=900)
+        self.cog = cog
+        self.event = event
+        self.entry = entry
+        self.user_id = user_id
+        self.revealed_count = max(0, min(3, int(revealed_count)))
+
+        if self.revealed_count == 0:
+            label = "첫 번째 칸 열기"
+        elif self.revealed_count == 1:
+            label = "두 번째 칸 열기"
+        elif self.revealed_count == 2:
+            label = "마지막 칸 열기"
+        else:
+            label = "개봉 완료"
+
+        button = discord.ui.Button(
+            label=label,
+            style=discord.ButtonStyle.success if self.revealed_count < 3 else discord.ButtonStyle.secondary,
+            disabled=self.revealed_count >= 3,
+        )
+        button.callback = self.reveal_next
+        self.add_item(button)
+
+    async def reveal_next(self, interaction: discord.Interaction):
+        if interaction.user.id != self.user_id:
+            await interaction.response.send_message("이 복권은 본인만 열 수 있습니다.", ephemeral=True)
+            return
+        await self.cog.handle_ticket_embed_reveal(
             interaction,
             self.event,
             self.entry,
@@ -273,28 +340,50 @@ class LotteryCog(commands.Cog):
             kwargs["attachments"] = panel_attachments(interaction.message)
         await interaction.response.edit_message(**kwargs)
 
-    async def send_lottery_ticket_dm(self, event: dict, entry: dict) -> bool:
+    async def handle_ticket_embed_reveal(
+        self,
+        interaction: discord.Interaction,
+        event: dict,
+        entry: dict,
+        user_id: int,
+        revealed_count: int,
+    ):
+        revealed_count = max(0, min(3, int(revealed_count)))
+        if revealed_count >= 3:
+            entry = await self.repos.lottery.mark_opened(event["guild_id"], event["_id"], user_id)
+        kwargs = {
+            "embed": lottery_ticket_embed(event, entry, revealed_count),
+            "view": LotteryTicketButtonView(self, event, entry, user_id, revealed_count),
+        }
+        if interaction.message is not None:
+            kwargs["attachments"] = panel_attachments(interaction.message)
+        await interaction.response.edit_message(**kwargs)
+
+    async def send_lottery_ticket_dm(self, event: dict, entry: dict) -> tuple[bool, str]:
         user_id = int(entry["user_id"])
         try:
             user = self.bot.get_user(user_id) or await self.bot.fetch_user(user_id)
             await user.send(
-                content=f"`{event.get('title', '도형 복권 추첨')}` 복권이 도착했습니다.",
-                view=LotteryTicketRevealView(self, event, entry, user_id),
+                embed=lottery_ticket_embed(event, entry, 0),
+                view=LotteryTicketButtonView(self, event, entry, user_id),
                 files=branded_files(),
             )
+        except discord.Forbidden:
+            return False, "DM 차단"
         except discord.HTTPException:
-            return False
-        return True
+            return False, "전송 실패"
+        return True, ""
 
-    async def send_lottery_ticket_dms(self, event: dict, entries: list[dict]) -> tuple[int, list[int]]:
+    async def send_lottery_ticket_dms(self, event: dict, entries: list[dict]) -> tuple[int, list[tuple[int, str]]]:
         sent = 0
-        failed_user_ids = []
+        failures = []
         for entry in entries:
-            if await self.send_lottery_ticket_dm(event, entry):
+            success, reason = await self.send_lottery_ticket_dm(event, entry)
+            if success:
                 sent += 1
             else:
-                failed_user_ids.append(int(entry["user_id"]))
-        return sent, failed_user_ids
+                failures.append((int(entry["user_id"]), reason))
+        return sent, failures
 
     @app_commands.command(name="추첨패널", description="도형 복권 추첨 신청 패널을 생성합니다.")
     @app_commands.default_permissions(administrator=True)
@@ -377,7 +466,7 @@ class LotteryCog(commands.Cog):
         event = await self.repos.lottery.save_draw(event, assignments, winner_ids)
         await self.refresh_panel(interaction.guild, event)
         drawn_entries = await self.repos.lottery.list_entries(interaction.guild.id, event["_id"])
-        dm_sent, dm_failed_user_ids = await self.send_lottery_ticket_dms(event, drawn_entries)
+        dm_sent, dm_failures = await self.send_lottery_ticket_dms(event, drawn_entries)
 
         winner_mentions = []
         for user_id in winner_ids:
@@ -387,16 +476,17 @@ class LotteryCog(commands.Cog):
         embed = success_embed(
             "추첨 마감 완료",
             f"신청자 `{len(entries)}`명 중 `{len(winner_ids)}`명이 당첨 복권을 받았습니다.\n"
-            f"DM 복권 발송 `{dm_sent}`명 완료, 실패 `{len(dm_failed_user_ids)}`명입니다.\n"
+            f"DM 복권 발송 `{dm_sent}`명 완료, 실패 `{len(dm_failures)}`명입니다.\n"
             "DM을 못 받은 참여자는 `/복권까기`로도 열 수 있습니다.",
         )
         embed.add_field(name="추첨번호", value=f"`{event['_id']}`", inline=True)
         embed.add_field(name="당첨자", value=", ".join(winner_mentions)[:1024], inline=False)
-        if dm_failed_user_ids:
+        if dm_failures:
             failed_mentions = []
-            for user_id in dm_failed_user_ids:
+            for user_id, reason in dm_failures:
                 member = interaction.guild.get_member(user_id)
-                failed_mentions.append(member.mention if member else f"`{user_id}`")
+                label = member.mention if member else f"`{user_id}`"
+                failed_mentions.append(f"{label} ({reason})")
             embed.add_field(name="DM 실패", value=", ".join(failed_mentions)[:1024], inline=False)
         await interaction.followup.send(embed=embed, ephemeral=True)
 
@@ -419,16 +509,17 @@ class LotteryCog(commands.Cog):
             await interaction.followup.send(embed=error_embed("신청자 없음", "발송할 복권이 없습니다."), ephemeral=True)
             return
 
-        dm_sent, dm_failed_user_ids = await self.send_lottery_ticket_dms(event, entries)
+        dm_sent, dm_failures = await self.send_lottery_ticket_dms(event, entries)
         embed = success_embed(
             "복권 DM 발송 완료",
-            f"추첨번호 `{event['_id']}` · 발송 `{dm_sent}`명 · 실패 `{len(dm_failed_user_ids)}`명",
+            f"추첨번호 `{event['_id']}` · 발송 `{dm_sent}`명 · 실패 `{len(dm_failures)}`명",
         )
-        if dm_failed_user_ids:
+        if dm_failures:
             failed_mentions = []
-            for user_id in dm_failed_user_ids:
+            for user_id, reason in dm_failures:
                 member = interaction.guild.get_member(user_id)
-                failed_mentions.append(member.mention if member else f"`{user_id}`")
+                label = member.mention if member else f"`{user_id}`"
+                failed_mentions.append(f"{label} ({reason})")
             embed.add_field(name="DM 실패", value=", ".join(failed_mentions)[:1024], inline=False)
         await interaction.followup.send(embed=embed, ephemeral=True)
 
