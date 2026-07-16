@@ -29,6 +29,7 @@ CHANNEL_KEYS = {
     "join_leave_log": "입퇴장 로그",
     "purchase_log": "구매 로그",
     "review_log": "후기 로그",
+    "coupon_log": "쿠폰·프로모션 로그",
     "vending_admin": "자판기 관리자",
     "vending_log": "자판기 로그",
     "middleman_log": "중개 로그",

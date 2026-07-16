@@ -128,7 +128,8 @@ class CouponStore:
     async def select(self, guild_id: int, user_id: int, context: str, code: str | None, *, channel_id: int | None = None):
         await self.selections.update_one(
             {"guild_id": guild_id, "user_id": user_id, "context": context},
-            {"$set": {"code": normalize_code(code or "") or None, "channel_id": channel_id, "updated_at": _now()}},
+            {"$set": {"code": normalize_code(code or "") or None, "promotion_code": None,
+                      "channel_id": channel_id, "updated_at": _now()}},
             upsert=True,
         )
 

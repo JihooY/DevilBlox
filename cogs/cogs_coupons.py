@@ -8,7 +8,7 @@ from discord import app_commands
 from discord.ext import commands
 
 from database.coupons import normalize_code
-from utils.embeds import branded_files, error_embed, success_embed
+from utils.embeds import branded_files, error_embed, info_embed, success_embed
 from utils.roles import has_role
 
 
@@ -128,6 +128,20 @@ class CouponCog(commands.Cog):
         settings = await self.repos.settings.get(interaction.guild.id)
         return has_role(interaction.user, settings["roles"].get("admin"))
 
+    async def send_coupon_log(self, guild: discord.Guild, title: str, description: str, **fields):
+        settings = await self.repos.settings.get(guild.id)
+        channel = guild.get_channel(settings["channels"].get("coupon_log") or 0)
+        if channel is None:
+            return
+        embed = info_embed(title, description)
+        for name, value in fields.items():
+            if value is not None:
+                embed.add_field(name=name.replace("_", " "), value=str(value)[:1024], inline=False)
+        try:
+            await channel.send(embed=embed)
+        except discord.HTTPException:
+            pass
+
     @commands.Cog.listener()
     async def on_ready(self): await self.cache_invites()
 
@@ -154,6 +168,7 @@ class CouponCog(commands.Cog):
             await interaction.followup.send(embed=error_embed("입력 오류", "종류는 일반/특별, 방식은 퍼센트/고정으로 입력해주세요. 고정 할인은 특별 쿠폰만 가능합니다."), ephemeral=True); return
         value = f"{doc['discount']:,}원" if doc.get("discount_type") == "fixed" else f"{doc['discount']}%"
         await interaction.followup.send(embed=success_embed("쿠폰 생성 완료", f"`{doc['code']}` · {value}"), ephemeral=True)
+        await self.send_coupon_log(interaction.guild, "COUPON CREATED", f"{interaction.user.mention}님이 쿠폰을 생성했습니다.", 코드=f"`{doc['code']}`", 이름=doc["name"], 할인=value)
         await self.refresh_admin_message(interaction)
 
     async def create_promotion_from_input(self, interaction, code, name, invite, discount):
@@ -162,11 +177,14 @@ class CouponCog(commands.Cog):
         except ValueError:
             await interaction.followup.send(embed=error_embed("입력 오류", "초대 링크와 1~100 할인율을 확인해주세요."), ephemeral=True); return
         await interaction.followup.send(embed=success_embed("프로모션 생성 완료", f"`{doc['code']}` · 초대 `{doc['invite_code']}`"), ephemeral=True)
+        await self.send_coupon_log(interaction.guild, "PROMOTION CREATED", f"{interaction.user.mention}님이 프로모션을 생성했습니다.", 코드=f"`{doc['code']}`", 이름=doc["name"], 초대_코드=f"`{doc['invite_code']}`", 할인=f"{doc['discount']}%")
         await self.refresh_admin_message(interaction)
 
     async def delete_code(self, interaction, code):
         await interaction.response.defer(ephemeral=True); ok = await self.repos.coupons.deactivate(interaction.guild.id, code)
         await interaction.followup.send(embed=success_embed("삭제 완료", f"`{normalize_code(code)}`") if ok else error_embed("코드 없음", "코드를 찾을 수 없습니다."), ephemeral=True)
+        if ok:
+            await self.send_coupon_log(interaction.guild, "COUPON DELETED", f"{interaction.user.mention}님이 코드를 비활성화했습니다.", 코드=f"`{normalize_code(code)}`")
         await self.refresh_admin_message(interaction)
 
     async def refresh_admin_message(self, interaction):
@@ -199,6 +217,8 @@ class CouponCog(commands.Cog):
     async def grant(self, interaction, 유저: discord.Member, 코드: str, 수량: app_commands.Range[int, 1, 100] = 1):
         await interaction.response.defer(ephemeral=True); doc = await self.repos.coupons.grant(interaction.guild.id, 유저.id, 코드, 수량, interaction.user.id)
         await interaction.followup.send(embed=success_embed("쿠폰 지급 완료", f"{유저.mention} · `{normalize_code(코드)}` {수량}장") if doc else error_embed("지급 실패", "활성 쿠폰 코드를 확인해주세요."), ephemeral=True)
+        if doc:
+            await self.send_coupon_log(interaction.guild, "COUPON GRANTED", f"{interaction.user.mention}님이 쿠폰을 지급했습니다.", 대상=f"{유저.mention} (`{유저.id}`)", 코드=f"`{normalize_code(코드)}`", 수량=f"{수량}장")
 
     @app_commands.command(name="쿠폰생성", description="일반 또는 특별 쿠폰을 생성합니다.")
     @app_commands.default_permissions(administrator=True)
@@ -211,6 +231,7 @@ class CouponCog(commands.Cog):
             await interaction.followup.send(embed=error_embed("입력 오류", "퍼센트는 1~100, 고정 금액은 특별 쿠폰에서만 사용할 수 있습니다."), ephemeral=True); return
         value = f"{doc['discount']:,}원" if doc.get("discount_type") == "fixed" else f"{doc['discount']}%"
         await interaction.followup.send(embed=success_embed("쿠폰 생성 완료", f"`{doc['code']}` · {value}"), ephemeral=True)
+        await self.send_coupon_log(interaction.guild, "COUPON CREATED", f"{interaction.user.mention}님이 쿠폰을 생성했습니다.", 코드=f"`{doc['code']}`", 이름=doc["name"], 할인=value)
 
     @app_commands.command(name="프로모션생성", description="초대 링크 전용 자판기 프로모션 코드를 생성합니다.")
     @app_commands.default_permissions(administrator=True)
@@ -220,6 +241,7 @@ class CouponCog(commands.Cog):
         except ValueError:
             await interaction.followup.send(embed=error_embed("입력 오류", "초대 링크와 할인율을 확인해주세요."), ephemeral=True); return
         await interaction.followup.send(embed=success_embed("프로모션 생성 완료", f"`{doc['code']}` · 초대 `{doc['invite_code']}`"), ephemeral=True)
+        await self.send_coupon_log(interaction.guild, "PROMOTION CREATED", f"{interaction.user.mention}님이 프로모션을 생성했습니다.", 코드=f"`{doc['code']}`", 이름=doc["name"], 초대_코드=f"`{doc['invite_code']}`", 할인=f"{doc['discount']}%")
 
     @app_commands.command(name="쿠폰삭제", description="쿠폰 또는 프로모션 코드를 삭제합니다.")
     @app_commands.default_permissions(administrator=True)
@@ -242,6 +264,7 @@ class CouponCog(commands.Cog):
             if await self.repos.coupons.grant(interaction.guild.id, member.id, 코드, 인당수량, interaction.user.id): granted.append(member)
         if not granted: await interaction.followup.send(embed=error_embed("이벤트 실패", "쿠폰 코드 또는 참여 인원을 확인해주세요."), ephemeral=True); return
         await interaction.channel.send(embed=success_embed("COUPON EVENT", f"당첨: {' '.join(x.mention for x in granted)}\n`{normalize_code(코드)}` 쿠폰 {인당수량}장씩 지급"))
+        await self.send_coupon_log(interaction.guild, "COUPON EVENT", f"{interaction.user.mention}님이 랜덤 쿠폰 이벤트를 실행했습니다.", 코드=f"`{normalize_code(코드)}`", 지급_수량=f"{인당수량}장 × {len(granted)}명", 당첨자="\n".join(f"{x.mention} (`{x.id}`)" for x in granted))
         await interaction.followup.send(embed=success_embed("이벤트 배포 완료", f"{len(granted)}명"), ephemeral=True)
 
 
