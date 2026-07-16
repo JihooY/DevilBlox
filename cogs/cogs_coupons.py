@@ -23,14 +23,15 @@ def invite_code(value: str) -> str | None:
 class CouponCreateModal(discord.ui.Modal, title="쿠폰 생성"):
     code = discord.ui.TextInput(label="쿠폰 코드", max_length=40)
     name = discord.ui.TextInput(label="쿠폰 이름", max_length=100)
-    discount = discord.ui.TextInput(label="할인율 (%)", placeholder="10", max_length=3)
+    discount = discord.ui.TextInput(label="할인값", placeholder="10 또는 5000", max_length=10)
     kind = discord.ui.TextInput(label="종류", placeholder="일반 또는 특별", max_length=10)
+    discount_type = discord.ui.TextInput(label="할인 방식", placeholder="퍼센트 또는 고정", max_length=10)
 
     def __init__(self, cog):
         super().__init__(); self.cog = cog
 
     async def on_submit(self, interaction):
-        await self.cog.create_coupon_from_input(interaction, str(self.code), str(self.name), str(self.kind), str(self.discount))
+        await self.cog.create_coupon_from_input(interaction, str(self.code), str(self.name), str(self.kind), str(self.discount), str(self.discount_type))
 
 
 class PromotionCreateModal(discord.ui.Modal, title="프로모션 코드 생성"):
@@ -60,7 +61,8 @@ class CouponAdminView(discord.ui.LayoutView):
                  f"활성 쿠폰 `{len(coupons)}`개 · 프로모션 `{len(promotions)}`개"]
         for item in coupons[:6]:
             kind = "일반" if item.get("kind") == "general" else "특별"
-            lines.append(f"- `{item['code']}` · {item['name']} · {kind} {item['discount']}%")
+            value = f"{int(item['discount']):,}원" if item.get("discount_type") == "fixed" else f"{item['discount']}%"
+            lines.append(f"- `{item['code']}` · {item['name']} · {kind} {value}")
         for item in promotions[:4]:
             lines.append(f"- `{item['code']}` · {item['name']} · 프로모션 {item['discount']}%")
         box = discord.ui.Container(accent_color=COLOR)
@@ -143,13 +145,15 @@ class CouponCog(commands.Cog):
         self.invite_cache[member.guild.id] = {x.code: x.uses or 0 for x in current}
         if used: await self.repos.coupons.attribute_invite(member.guild.id, member.id, used.code, used.inviter.id if used.inviter else None)
 
-    async def create_coupon_from_input(self, interaction, code, name, kind, discount):
+    async def create_coupon_from_input(self, interaction, code, name, kind, discount, discount_type):
         await interaction.response.defer(ephemeral=True)
         mapping = {"일반": "general", "특별": "special", "general": "general", "special": "special"}
-        try: doc = await self.repos.coupons.create_coupon(interaction.guild.id, code, name, mapping[kind.strip().lower()], int(discount), interaction.user.id)
+        type_mapping = {"퍼센트": "percent", "비율": "percent", "percent": "percent", "고정": "fixed", "fixed": "fixed"}
+        try: doc = await self.repos.coupons.create_coupon(interaction.guild.id, code, name, mapping[kind.strip().lower()], int(discount), interaction.user.id, type_mapping[discount_type.strip().lower()])
         except (ValueError, KeyError):
-            await interaction.followup.send(embed=error_embed("입력 오류", "종류는 일반/특별, 할인율은 1~100으로 입력해주세요."), ephemeral=True); return
-        await interaction.followup.send(embed=success_embed("쿠폰 생성 완료", f"`{doc['code']}` · {doc['discount']}%"), ephemeral=True)
+            await interaction.followup.send(embed=error_embed("입력 오류", "종류는 일반/특별, 방식은 퍼센트/고정으로 입력해주세요. 고정 할인은 특별 쿠폰만 가능합니다."), ephemeral=True); return
+        value = f"{doc['discount']:,}원" if doc.get("discount_type") == "fixed" else f"{doc['discount']}%"
+        await interaction.followup.send(embed=success_embed("쿠폰 생성 완료", f"`{doc['code']}` · {value}"), ephemeral=True)
         await self.refresh_admin_message(interaction)
 
     async def create_promotion_from_input(self, interaction, code, name, invite, discount):
@@ -199,12 +203,14 @@ class CouponCog(commands.Cog):
     @app_commands.command(name="쿠폰생성", description="일반 또는 특별 쿠폰을 생성합니다.")
     @app_commands.default_permissions(administrator=True)
     @app_commands.choices(종류=[app_commands.Choice(name="일반 (자판기)", value="general"), app_commands.Choice(name="특별 (티켓)", value="special")])
-    async def create_command(self, interaction, 코드: str, 이름: str, 종류: app_commands.Choice[str], 할인율: app_commands.Range[int, 1, 100]):
+    @app_commands.choices(할인방식=[app_commands.Choice(name="퍼센트 할인", value="percent"), app_commands.Choice(name="고정 금액 할인 (특별 쿠폰)", value="fixed")])
+    async def create_command(self, interaction, 코드: str, 이름: str, 종류: app_commands.Choice[str], 할인방식: app_commands.Choice[str], 할인값: app_commands.Range[int, 1, 1000000000]):
         await interaction.response.defer(ephemeral=True)
-        try: doc = await self.repos.coupons.create_coupon(interaction.guild.id, 코드, 이름, 종류.value, 할인율, interaction.user.id)
+        try: doc = await self.repos.coupons.create_coupon(interaction.guild.id, 코드, 이름, 종류.value, 할인값, interaction.user.id, 할인방식.value)
         except ValueError:
-            await interaction.followup.send(embed=error_embed("입력 오류", "코드와 할인율을 확인해주세요."), ephemeral=True); return
-        await interaction.followup.send(embed=success_embed("쿠폰 생성 완료", f"`{doc['code']}` · {doc['discount']}%"), ephemeral=True)
+            await interaction.followup.send(embed=error_embed("입력 오류", "퍼센트는 1~100, 고정 금액은 특별 쿠폰에서만 사용할 수 있습니다."), ephemeral=True); return
+        value = f"{doc['discount']:,}원" if doc.get("discount_type") == "fixed" else f"{doc['discount']}%"
+        await interaction.followup.send(embed=success_embed("쿠폰 생성 완료", f"`{doc['code']}` · {value}"), ephemeral=True)
 
     @app_commands.command(name="프로모션생성", description="초대 링크 전용 자판기 프로모션 코드를 생성합니다.")
     @app_commands.default_permissions(administrator=True)
@@ -222,7 +228,7 @@ class CouponCog(commands.Cog):
     @app_commands.command(name="쿠폰목록", description="보유 쿠폰을 확인합니다.")
     async def inventory(self, interaction):
         items = await self.repos.coupons.list_for_user(interaction.guild.id, interaction.user.id)
-        text = "\n".join(f"`{x['code']}` · {x['coupon']['name']} · {x['coupon']['discount']}% · {x['quantity']}장" for x in items) or "보유 쿠폰이 없습니다."
+        text = "\n".join(f"`{x['code']}` · {x['coupon']['name']} · " + (f"{x['coupon']['discount']:,}원" if x['coupon'].get('discount_type') == 'fixed' else f"{x['coupon']['discount']}%") + f" · {x['quantity']}장" for x in items) or "보유 쿠폰이 없습니다."
         await interaction.response.send_message(embed=success_embed("보유 쿠폰", text), ephemeral=True)
 
     @app_commands.command(name="쿠폰이벤트", description="랜덤 인원에게 쿠폰을 배포합니다.")

@@ -8,13 +8,15 @@ import discord
 from discord import app_commands
 from discord.ext import commands, tasks
 
-from utils.embeds import error_embed, info_embed, success_embed
+from utils.embeds import BRAND_LOGO_URL, branded_files, error_embed, info_embed, success_embed
 from utils.gifs import (
     PANEL_GIFS,
     SUCCESS_GIFS,
     TICKET_CLOSE_GIFS,
     TICKET_OPEN_GIFS,
     TICKET_STATE_GIFS,
+    choose_gif,
+    gif_file,
     random_embed_gif_kwargs,
 )
 from utils.panels import restore_panel_message, save_panel_location
@@ -76,7 +78,7 @@ class PurchaseSelect(discord.ui.Select):
             await interaction.response.defer(ephemeral=True)
             await interaction.followup.send(embed=error_embed("셀러 없음", "등록된 셀러가 없습니다."), ephemeral=True)
             return
-        await self.cog.open_purchase_ticket(interaction, int(self.values[0]))
+        await self.cog.begin_purchase_ticket(interaction, int(self.values[0]))
 
 
 class PurchaseSellerRatingSelect(discord.ui.Select):
@@ -147,34 +149,45 @@ class PurchasePanelView(discord.ui.View):
         )
 
 
-class PurchaseTicketView(discord.ui.View):
-    def __init__(self, cog: "PurchaseCog"):
-        super().__init__(timeout=None)
-        self.cog = cog
-
-    @discord.ui.button(
-        label="계좌 확인",
-        style=discord.ButtonStyle.primary,
-        custom_id="devilblox:purchase:account",
+class PurchaseCouponModal(discord.ui.Modal, title="구매 티켓 열기"):
+    coupon_code = discord.ui.TextInput(
+        label="사용할 특별 쿠폰 코드",
+        placeholder="없으면 비워두세요",
+        required=False,
+        max_length=40,
     )
-    async def account(self, interaction: discord.Interaction, _: discord.ui.Button):
+
+    def __init__(self, cog: "PurchaseCog", seller_id: int):
+        super().__init__(); self.cog = cog; self.seller_id = seller_id
+
+    async def on_submit(self, interaction: discord.Interaction):
+        await self.cog.open_purchase_ticket(interaction, self.seller_id, str(self.coupon_code).strip())
+
+
+class PurchaseTicketView(discord.ui.LayoutView):
+    def __init__(self, cog: "PurchaseCog", *, buyer=None, seller=None, coupon=None, gif_name=None):
+        super().__init__(timeout=None); self.cog = cog
+        buyer_text = buyer.mention if buyer else "구매자"
+        seller_text = seller.mention if seller else "셀러"
+        lines = ["## PURCHASE TICKET", f"{buyer_text}님이 {seller_text} 셀러 구매 티켓을 열었습니다.", "",
+                 f"**구매자**  {buyer_text}", f"**셀러**  {seller_text}"]
+        if coupon:
+            value = f"{int(coupon['discount']):,}원 고정 할인" if coupon.get("discount_type") == "fixed" else f"{coupon['discount']}% 할인"
+            lines.extend(["", "### 적용 쿠폰", f"**{coupon['name']}** (`{coupon['code']}`)", f"할인값: **{value}**"])
+        else:
+            lines.extend(["", "### 적용 쿠폰", "사용 안 함"])
+        lines.extend(["", "아래 `계좌 확인` 버튼을 누르면 본인에게만 계좌가 표시됩니다."])
+        box = discord.ui.Container(accent_color=0x5865F2)
+        box.add_item(discord.ui.Section(discord.ui.TextDisplay("\n".join(lines)), accessory=discord.ui.Thumbnail(BRAND_LOGO_URL)))
+        if gif_name:
+            box.add_item(discord.ui.MediaGallery(discord.MediaGalleryItem(f"attachment://{gif_name}")))
+        box.add_item(discord.ui.Separator())
+        account = discord.ui.Button(label="계좌 확인", style=discord.ButtonStyle.primary, custom_id="devilblox:purchase:account")
+        account.callback = self.account
+        box.add_item(discord.ui.ActionRow(account)); self.add_item(box)
+
+    async def account(self, interaction: discord.Interaction):
         await self.cog.show_ticket_payment_account(interaction)
-
-    @discord.ui.button(
-        label="보유 쿠폰 (selection2)",
-        style=discord.ButtonStyle.secondary,
-        custom_id="devilblox:purchase:coupon",
-    )
-    async def coupon(self, interaction: discord.Interaction, _: discord.ui.Button):
-        coupon_cog = self.cog.bot.get_cog("CouponCog")
-        if coupon_cog is None:
-            await interaction.response.send_message(embed=error_embed("쿠폰 오류", "쿠폰 시스템이 로드되지 않았습니다."), ephemeral=True)
-            return
-        ticket = await self.cog.repos.tickets.get_by_channel(interaction.guild.id, interaction.channel_id, "purchase")
-        if not ticket or ticket.get("user_id") != interaction.user.id:
-            await interaction.response.send_message(embed=error_embed("권한 없음", "이 티켓의 구매자만 쿠폰을 선택할 수 있습니다."), ephemeral=True)
-            return
-        await coupon_cog.show_selector(interaction, f"ticket:{interaction.channel_id}", "special", interaction.channel_id)
 
 
 class PurchaseCog(commands.Cog):
@@ -285,7 +298,10 @@ class PurchaseCog(commands.Cog):
         )
         await self._refresh_seller_current_ticket_count(guild_id, seller_id)
 
-    async def open_purchase_ticket(self, interaction: discord.Interaction, seller_id: int):
+    async def begin_purchase_ticket(self, interaction: discord.Interaction, seller_id: int):
+        await interaction.response.send_modal(PurchaseCouponModal(self, seller_id))
+
+    async def open_purchase_ticket(self, interaction: discord.Interaction, seller_id: int, coupon_code: str = ""):
         await interaction.response.defer(ephemeral=True)
         guild = interaction.guild
         if guild is None:
@@ -303,6 +319,19 @@ class PurchaseCog(commands.Cog):
         if seller_doc is None:
             await interaction.followup.send(embed=error_embed("셀러 오류", "등록되지 않은 셀러입니다."), ephemeral=True)
             return
+
+        owned_coupon = None
+        if coupon_code:
+            owned_coupon = await self.repos.coupons.get_owned_coupon(
+                guild.id, interaction.user.id, coupon_code, "special"
+            )
+            if owned_coupon is None:
+                await interaction.followup.send(
+                    embed=error_embed("쿠폰 사용 불가", "보유 중인 활성 특별 쿠폰 코드를 입력해주세요."),
+                    ephemeral=True,
+                )
+                return
+        coupon = (owned_coupon or {}).get("coupon")
         if seller_doc.get("ticket_disabled"):
             reason = seller_doc.get("disabled_reason") or "사유 없음"
             await interaction.followup.send(embed=error_embed("티켓 비활성화", reason), ephemeral=True)
@@ -346,20 +375,20 @@ class PurchaseCog(commands.Cog):
             interaction.user.id,
             channel.id,
             seller_id=seller.id,
+            coupon_code=(coupon or {}).get("code"),
+            coupon_name=(coupon or {}).get("name"),
+            coupon_discount=(coupon or {}).get("discount"),
+            coupon_discount_type=(coupon or {}).get("discount_type", "percent") if coupon else None,
         )
 
         await self.add_seller_current_ticket(guild.id, seller.id, channel.id)
         await self.refresh_ticket_condition_panel(guild)
 
-        embed = info_embed("PURCHASE", f"{interaction.user.mention}님이 {seller.mention} 셀러 구매 티켓을 열었습니다.")
-        embed.add_field(name="셀러", value=seller.mention, inline=True)
-        embed.add_field(name="구매자", value=interaction.user.mention, inline=True)
-        embed.add_field(name="입금 계좌", value="아래 `계좌 확인` 버튼을 누르면 본인에게만 표시됩니다.", inline=False)
-        ticket_kwargs = random_embed_gif_kwargs(embed, TICKET_OPEN_GIFS)
-        ticket_kwargs["view"] = PurchaseTicketView(self)
+        gif_name = choose_gif(TICKET_OPEN_GIFS)
+        ticket_view = PurchaseTicketView(self, buyer=interaction.user, seller=seller, coupon=coupon, gif_name=gif_name)
         await channel.send(
-            content=f"{interaction.user.mention} {seller.mention}",
-            **ticket_kwargs,
+            view=ticket_view,
+            files=branded_files(gif_file(gif_name)),
         )
         await interaction.followup.send(embed=success_embed("구매 티켓 생성 완료", channel.mention), ephemeral=True)
 
@@ -571,12 +600,9 @@ class PurchaseCog(commands.Cog):
 
         original_amount = 금액
         coupon_code = None
-        selection = await self.repos.coupons.get_selection(
-            interaction.guild.id, ticket["user_id"], f"ticket:{interaction.channel_id}"
-        )
-        if selection and selection.get("code"):
+        if ticket.get("coupon_code"):
             consumed = await self.repos.coupons.consume(
-                interaction.guild.id, ticket["user_id"], selection["code"], "ticket", 금액
+                interaction.guild.id, ticket["user_id"], ticket["coupon_code"], "ticket", 금액
             )
             if consumed:
                 coupon, 금액 = consumed

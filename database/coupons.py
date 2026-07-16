@@ -37,14 +37,20 @@ class CouponStore:
         await self.selections.create_index([("guild_id", 1), ("user_id", 1), ("context", 1)], unique=True)
         await self.redemptions.create_index([("guild_id", 1), ("user_id", 1), ("created_at", -1)])
 
-    async def create_coupon(self, guild_id: int, code: str, name: str, kind: str, discount: int, created_by: int):
+    async def create_coupon(self, guild_id: int, code: str, name: str, kind: str, discount: int,
+                            created_by: int, discount_type: str = "percent"):
         code = normalize_code(code)
-        if kind not in {"general", "special"} or not code or not 1 <= discount <= 100:
+        if kind not in {"general", "special"} or discount_type not in {"percent", "fixed"} or not code:
+            raise ValueError("invalid coupon")
+        if discount < 1 or (discount_type == "percent" and discount > 100):
+            raise ValueError("invalid coupon")
+        if discount_type == "fixed" and kind != "special":
             raise ValueError("invalid coupon")
         now = _now()
         await self.coupons.update_one(
             {"guild_id": guild_id, "code": code},
             {"$set": {"name": name.strip()[:100] or code, "kind": kind, "discount": discount,
+                      "discount_type": discount_type,
                       "active": True, "updated_at": now, "created_by": created_by},
              "$setOnInsert": {"guild_id": guild_id, "code": code, "created_at": now}},
             upsert=True,
@@ -106,6 +112,19 @@ class CouponStore:
         by_code = {x["code"]: x for x in definitions}
         return [{**x, "coupon": by_code[x["code"]]} for x in owned if x["code"] in by_code]
 
+    async def get_owned_coupon(self, guild_id: int, user_id: int, code: str, kind: str | None = None):
+        code = normalize_code(code)
+        owned = await self.user_coupons.find_one(
+            {"guild_id": guild_id, "user_id": user_id, "code": code, "quantity": {"$gt": 0}}
+        )
+        if not owned:
+            return None
+        query = {"guild_id": guild_id, "code": code, "active": True}
+        if kind:
+            query["kind"] = kind
+        coupon = await self.coupons.find_one(query)
+        return {**owned, "coupon": coupon} if coupon else None
+
     async def select(self, guild_id: int, user_id: int, context: str, code: str | None, *, channel_id: int | None = None):
         await self.selections.update_one(
             {"guild_id": guild_id, "user_id": user_id, "context": context},
@@ -152,7 +171,12 @@ class CouponStore:
         )
         if owned is None:
             return None
-        discounted = max(0, amount - (amount * int(coupon["discount"]) // 100))
+        value = int(coupon["discount"])
+        discounted = (
+            max(0, amount - value)
+            if coupon.get("discount_type", "percent") == "fixed"
+            else max(0, amount - (amount * value // 100))
+        )
         await self.redemptions.insert_one({"guild_id": guild_id, "user_id": user_id, "code": code,
                                            "kind": coupon["kind"], "context": context, "amount": amount,
                                            "discounted_amount": discounted, "created_at": _now()})

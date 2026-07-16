@@ -1205,7 +1205,6 @@ class VendingArchiveCog(commands.Cog):
         if items:
             from cogs.cogs_coupons import CouponSelectView
             await interaction.response.send_message(
-                content="보유 쿠폰을 선택하거나 아래 버튼으로 프로모션 코드를 입력하세요.",
                 view=CouponSelectView(coupon_cog, items, context), ephemeral=True
             )
             await interaction.followup.send(view=PromotionInputView(self, product_id), ephemeral=True)
