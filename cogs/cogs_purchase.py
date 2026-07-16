@@ -184,9 +184,39 @@ class PurchaseCouponSelectView(discord.ui.LayoutView):
         self.add_item(box)
 
 
+def copyable_code_block(value: str) -> str:
+    sanitized = value.strip().replace("```", "'''")
+    return f"```text\n{sanitized[:1800]}\n```"
+
+
+class SellerPaymentAccountView(discord.ui.LayoutView):
+    def __init__(self, *, seller_label: str, account: str):
+        super().__init__(timeout=180)
+        account_text = account.strip()
+        has_account = bool(account_text)
+        lines = [
+            "## 계좌 확인",
+            "이 정보는 본인에게만 표시됩니다.",
+            "",
+            f"**셀러**  {seller_label}",
+            "",
+            "### 입금 계좌",
+            copyable_code_block(account_text) if has_account else "아직 등록된 셀러 계좌가 없습니다.",
+        ]
+
+        box = discord.ui.Container(accent_color=0x2ECC71 if has_account else 0xE5484D)
+        box.add_item(
+            discord.ui.Section(
+                discord.ui.TextDisplay("\n".join(lines)),
+                accessory=discord.ui.Thumbnail(BRAND_LOGO_URL),
+            )
+        )
+        self.add_item(box)
+
+
 class PurchaseTicketView(discord.ui.LayoutView):
-    def __init__(self, cog: "PurchaseCog", *, buyer=None, seller=None, coupon=None, gif_name=None):
-        super().__init__(timeout=None); self.cog = cog
+    def __init__(self, *, buyer=None, seller=None, coupon=None, gif_name=None):
+        super().__init__(timeout=None)
         buyer_text = buyer.mention if buyer else "구매자"
         seller_text = seller.mention if seller else "셀러"
         lines = ["## PURCHASE TICKET", f"{buyer_text}님이 {seller_text} 셀러 구매 티켓을 열었습니다.", "",
@@ -196,25 +226,18 @@ class PurchaseTicketView(discord.ui.LayoutView):
             lines.extend(["", "### 적용 쿠폰", f"**{coupon['name']}** (`{coupon['code']}`)", f"할인값: **{value}**"])
         else:
             lines.extend(["", "### 적용 쿠폰", "사용 안 함"])
-        lines.extend(["", "아래 `계좌 확인` 버튼을 누르면 본인에게만 계좌가 표시됩니다."])
+        lines.extend(["", "계좌는 `/계좌확인` 명령어로 본인에게만 확인할 수 있습니다."])
         box = discord.ui.Container(accent_color=0x5865F2)
         box.add_item(discord.ui.Section(discord.ui.TextDisplay("\n".join(lines)), accessory=discord.ui.Thumbnail(BRAND_LOGO_URL)))
         if gif_name:
             box.add_item(discord.ui.MediaGallery(discord.MediaGalleryItem(f"attachment://{gif_name}")))
-        box.add_item(discord.ui.Separator())
-        account = discord.ui.Button(label="계좌 확인", style=discord.ButtonStyle.primary, custom_id="devilblox:purchase:account")
-        account.callback = self.account
-        box.add_item(discord.ui.ActionRow(account)); self.add_item(box)
-
-    async def account(self, interaction: discord.Interaction):
-        await self.cog.show_ticket_payment_account(interaction)
+        self.add_item(box)
 
 
 class PurchaseCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
         self.bot.add_view(PurchasePanelView(self, []))
-        self.bot.add_view(PurchaseTicketView(self))
 
     async def cog_load(self):
         self.purchase_panel_loop.start()
@@ -412,18 +435,18 @@ class PurchaseCog(commands.Cog):
         await self.refresh_ticket_condition_panel(guild)
 
         gif_name = choose_gif(TICKET_OPEN_GIFS)
-        ticket_view = PurchaseTicketView(self, buyer=interaction.user, seller=seller, coupon=coupon, gif_name=gif_name)
+        ticket_view = PurchaseTicketView(buyer=interaction.user, seller=seller, coupon=coupon, gif_name=gif_name)
         await channel.send(
             view=ticket_view,
             files=branded_files(gif_file(gif_name)),
         )
         await interaction.followup.send(embed=success_embed("구매 티켓 생성 완료", channel.mention), ephemeral=True)
 
-    async def build_seller_payment_account_embed(
+    async def build_seller_payment_account_view(
         self,
         guild: discord.Guild,
         seller_id: int,
-    ) -> discord.Embed | None:
+    ) -> SellerPaymentAccountView | None:
         seller_doc = await self.repos.sellers.get(guild.id, seller_id)
         if seller_doc is None:
             return None
@@ -431,11 +454,7 @@ class PurchaseCog(commands.Cog):
         seller = await fetch_member(guild, seller_id)
         seller_label = seller.mention if seller else f"<@{seller_id}>"
         account = (seller_doc.get("payment_account") or "").strip()
-        account_value = account or "아직 등록된 셀러 계좌가 없습니다. 셀러에게 계좌 안내를 요청해주세요."
-        embed = info_embed("계좌 확인", "이 계좌 정보는 본인에게만 표시됩니다.")
-        embed.add_field(name="셀러", value=seller_label, inline=False)
-        embed.add_field(name="입금 계좌", value=account_value[:1024], inline=False)
-        return embed
+        return SellerPaymentAccountView(seller_label=seller_label, account=account)
 
     async def send_seller_payment_account(self, interaction: discord.Interaction, seller_id: int):
         if not interaction.response.is_done():
@@ -444,33 +463,11 @@ class PurchaseCog(commands.Cog):
             await interaction.followup.send(embed=error_embed("처리 실패", "서버 안에서만 사용할 수 있습니다."), ephemeral=True)
             return
 
-        embed = await self.build_seller_payment_account_embed(interaction.guild, seller_id)
-        if embed is None:
+        view = await self.build_seller_payment_account_view(interaction.guild, seller_id)
+        if view is None:
             await interaction.followup.send(embed=error_embed("셀러 없음", "등록된 셀러를 찾을 수 없습니다."), ephemeral=True)
             return
-        await interaction.followup.send(embed=embed, ephemeral=True)
-
-    async def show_ticket_payment_account(self, interaction: discord.Interaction):
-        await interaction.response.defer(ephemeral=True)
-        if not interaction.guild:
-            await interaction.followup.send(embed=error_embed("처리 실패", "서버 안에서만 사용할 수 있습니다."), ephemeral=True)
-            return
-
-        ticket = await self.repos.tickets.get_by_channel(interaction.guild.id, interaction.channel_id, "purchase")
-        if not ticket or ticket.get("status") != "open":
-            await interaction.followup.send(embed=error_embed("티켓 오류", "열려있는 구매 티켓에서만 계좌를 확인할 수 있습니다."), ephemeral=True)
-            return
-
-        allowed_user_ids = {int(ticket.get("user_id") or 0), int(ticket.get("seller_id") or 0)}
-        if interaction.user.id not in allowed_user_ids and not await self._admin_allowed(interaction):
-            await interaction.followup.send(embed=error_embed("권한 없음", "이 티켓 참여자만 계좌를 확인할 수 있습니다."), ephemeral=True)
-            return
-
-        seller_id = ticket.get("seller_id")
-        if not seller_id:
-            await interaction.followup.send(embed=error_embed("셀러 없음", "이 티켓의 셀러 정보를 찾을 수 없습니다."), ephemeral=True)
-            return
-        await self.send_seller_payment_account(interaction, int(seller_id))
+        await interaction.followup.send(view=view, files=branded_files(), ephemeral=True)
 
     async def show_seller_rating(self, interaction: discord.Interaction, seller_id: int):
         await interaction.response.defer(ephemeral=True)
@@ -806,7 +803,7 @@ class PurchaseCog(commands.Cog):
     async def check_seller_payment_account(self, interaction: discord.Interaction, 셀러: discord.Member):
         await self.send_seller_payment_account(interaction, 셀러.id)
 
-    @app_commands.command(name="계좌등록", description="계좌 확인 버튼/명령어로 표시할 셀러 계좌를 등록하거나 수정합니다.")
+    @app_commands.command(name="계좌등록", description="계좌 확인 명령어로 표시할 셀러 계좌를 등록하거나 수정합니다.")
     @app_commands.default_permissions(send_messages=True)
     @app_commands.describe(
         계좌정보="예: 국민 123456-78-901234 홍길동",
@@ -834,7 +831,7 @@ class PurchaseCog(commands.Cog):
 
         await self.repos.sellers.upsert(interaction.guild.id, target.id, target.display_name)
         await self.repos.sellers.set_payment_account(interaction.guild.id, target.id, 계좌정보)
-        embed = success_embed("계좌 등록 완료", f"{target.mention} 계좌 확인 버튼/명령어로 표시됩니다.")
+        embed = success_embed("계좌 등록 완료", f"{target.mention} 계좌 확인 명령어로 표시됩니다.")
         await interaction.followup.send(
             **random_embed_gif_kwargs(embed, SUCCESS_GIFS),
             ephemeral=True,
