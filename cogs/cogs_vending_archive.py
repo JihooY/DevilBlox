@@ -475,7 +475,9 @@ class ProductDetailView(discord.ui.LayoutView):
             style=discord.ButtonStyle.success if not owned else discord.ButtonStyle.secondary,
         )
         buy_button.callback = self.buy
-        detail_buttons = [buy_button]
+        discount_button = discord.ui.Button(label="쿠폰 / 프로모션", style=discord.ButtonStyle.primary)
+        discount_button.callback = self.discount
+        detail_buttons = [buy_button, discount_button]
         page_url = cog.product_page_url(int(product["guild_id"]), product)
         if page_url:
             detail_buttons.append(discord.ui.Button(label="상품 페이지", style=discord.ButtonStyle.link, url=page_url))
@@ -484,6 +486,23 @@ class ProductDetailView(discord.ui.LayoutView):
 
     async def buy(self, interaction: discord.Interaction):
         await self.cog.handle_purchase(interaction, self.product_id)
+
+    async def discount(self, interaction: discord.Interaction):
+        await self.cog.handle_discount_menu(interaction, self.product_id)
+
+
+class PromotionCodeModal(discord.ui.Modal, title="프로모션 코드 입력"):
+    code = discord.ui.TextInput(label="프로모션 코드", max_length=40)
+    def __init__(self, cog, product_id):
+        super().__init__(); self.cog = cog; self.product_id = product_id
+    async def on_submit(self, interaction):
+        await self.cog.handle_promotion_code(interaction, self.product_id, str(self.code))
+
+
+class PromotionInputView(discord.ui.View):
+    def __init__(self, cog, product_id): super().__init__(timeout=300); self.cog = cog; self.product_id = product_id
+    @discord.ui.button(label="프로모션 코드 입력", style=discord.ButtonStyle.primary)
+    async def promotion(self, interaction, _): await interaction.response.send_modal(PromotionCodeModal(self.cog, self.product_id))
 
 
 class DownloadSelect(discord.ui.Select):
@@ -1105,7 +1124,11 @@ class VendingArchiveCog(commands.Cog):
                 )
             return
 
-        price = int(product.get("price", 0))
+        original_price = int(product.get("price", 0))
+        context = f"vending:{normalize_product_id(product_id)}"
+        price, selected_coupon, selected_promotion = await self.repos.coupons.quote(
+            interaction.guild.id, interaction.user.id, context, original_price
+        )
         spent = await self.repos.users.spend_cash(interaction.guild.id, interaction.user.id, price)
         if spent is None:
             await self.repos.vending.release_product_reservation(interaction.guild.id, interaction.user.id, product_id)
@@ -1119,6 +1142,15 @@ class VendingArchiveCog(commands.Cog):
             )
             return
 
+        applied_code = None
+        if selected_coupon:
+            consumed = await self.repos.coupons.consume(
+                interaction.guild.id, interaction.user.id, selected_coupon["code"], "vending", original_price
+            )
+            if consumed: applied_code = selected_coupon["code"]
+        elif selected_promotion:
+            applied_code = selected_promotion["code"]
+
         log_doc = await self.repos.vending.record_purchase(
             guild_id=interaction.guild.id,
             user_id=interaction.user.id,
@@ -1126,6 +1158,13 @@ class VendingArchiveCog(commands.Cog):
             before_cash=spent["before_cash"],
             after_cash=spent["after_cash"],
         )
+        if applied_code:
+            await self.repos.vending.purchase_logs.update_one(
+                {"_id": log_doc["_id"]}, {"$set": {"price": price, "original_price": original_price, "discount_code": applied_code}}
+            )
+            log_doc["price"] = price
+            log_doc["original_price"] = original_price
+            log_doc["discount_code"] = applied_code
         if product.get("seller_id"):
             await self.repos.sellers.add_sale(interaction.guild.id, product["seller_id"], price)
 
@@ -1156,6 +1195,31 @@ class VendingArchiveCog(commands.Cog):
                 amount=price,
             )
         await interaction.followup.send(embed=self.build_download_embed(product), ephemeral=True)
+
+    async def handle_discount_menu(self, interaction: discord.Interaction, product_id: str):
+        coupon_cog = self.bot.get_cog("CouponCog")
+        if coupon_cog is None:
+            await interaction.response.send_message(embed=error_embed("쿠폰 오류", "쿠폰 시스템이 로드되지 않았습니다."), ephemeral=True); return
+        items = await self.repos.coupons.list_for_user(interaction.guild.id, interaction.user.id, "general")
+        context = f"vending:{normalize_product_id(product_id)}"
+        if items:
+            from cogs.cogs_coupons import CouponSelectView
+            await interaction.response.send_message(
+                content="보유 쿠폰을 선택하거나 아래 버튼으로 프로모션 코드를 입력하세요.",
+                view=CouponSelectView(coupon_cog, items, context), ephemeral=True
+            )
+            await interaction.followup.send(view=PromotionInputView(self, product_id), ephemeral=True)
+        else:
+            await interaction.response.send_message(content="프로모션 코드를 입력하세요.", view=PromotionInputView(self, product_id), ephemeral=True)
+
+    async def handle_promotion_code(self, interaction: discord.Interaction, product_id: str, code: str):
+        await interaction.response.defer(ephemeral=True)
+        promo = await self.repos.coupons.validate_promotion(interaction.guild.id, interaction.user.id, code)
+        if promo is None:
+            await interaction.followup.send(embed=error_embed("사용 불가", "해당 프로모션 전용 초대 링크로 가입한 계정만 사용할 수 있습니다."), ephemeral=True); return
+        await self.repos.coupons.select_promotion(interaction.guild.id, interaction.user.id,
+                                                  f"vending:{normalize_product_id(product_id)}", code)
+        await interaction.followup.send(embed=success_embed("프로모션 적용", f"`{promo['code']}` · {promo['discount']}% 할인"), ephemeral=True)
 
     async def handle_download_menu(self, interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True)

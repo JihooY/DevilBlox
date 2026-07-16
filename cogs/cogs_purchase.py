@@ -160,6 +160,22 @@ class PurchaseTicketView(discord.ui.View):
     async def account(self, interaction: discord.Interaction, _: discord.ui.Button):
         await self.cog.show_ticket_payment_account(interaction)
 
+    @discord.ui.button(
+        label="보유 쿠폰 (selection2)",
+        style=discord.ButtonStyle.secondary,
+        custom_id="devilblox:purchase:coupon",
+    )
+    async def coupon(self, interaction: discord.Interaction, _: discord.ui.Button):
+        coupon_cog = self.cog.bot.get_cog("CouponCog")
+        if coupon_cog is None:
+            await interaction.response.send_message(embed=error_embed("쿠폰 오류", "쿠폰 시스템이 로드되지 않았습니다."), ephemeral=True)
+            return
+        ticket = await self.cog.repos.tickets.get_by_channel(interaction.guild.id, interaction.channel_id, "purchase")
+        if not ticket or ticket.get("user_id") != interaction.user.id:
+            await interaction.response.send_message(embed=error_embed("권한 없음", "이 티켓의 구매자만 쿠폰을 선택할 수 있습니다."), ephemeral=True)
+            return
+        await coupon_cog.show_selector(interaction, f"ticket:{interaction.channel_id}", "special", interaction.channel_id)
+
 
 class PurchaseCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
@@ -553,6 +569,19 @@ class PurchaseCog(commands.Cog):
                 return
         closed_at = datetime.now(timezone.utc)
 
+        original_amount = 금액
+        coupon_code = None
+        selection = await self.repos.coupons.get_selection(
+            interaction.guild.id, ticket["user_id"], f"ticket:{interaction.channel_id}"
+        )
+        if selection and selection.get("code"):
+            consumed = await self.repos.coupons.consume(
+                interaction.guild.id, ticket["user_id"], selection["code"], "ticket", 금액
+            )
+            if consumed:
+                coupon, 금액 = consumed
+                coupon_code = coupon["code"]
+
         if buyer:
             await deny_ticket_access(channel, buyer)
         if seller:
@@ -563,6 +592,8 @@ class PurchaseCog(commands.Cog):
             "구매 티켓 종료",
             f"상품명: {상품명}\n금액: {금액:,}원\n{delete_notice}",
         )
+        if coupon_code:
+            embed.add_field(name="쿠폰 적용", value=f"`{coupon_code}` · {original_amount:,}원 → {금액:,}원", inline=False)
         await channel.send(**random_embed_gif_kwargs(embed, TICKET_CLOSE_GIFS))
         transcript = await collect_channel_transcript(channel)
         await self.repos.tickets.save_transcript(ticket, transcript)
@@ -573,6 +604,8 @@ class PurchaseCog(commands.Cog):
             amount=금액,
             product_category_id=(category or {}).get("category_id", ""),
             product_category_name=(category or {}).get("name", ""),
+            original_amount=original_amount,
+            coupon_code=coupon_code,
             closed_by=interaction.user.id,
         )
         await self.remove_seller_current_ticket(interaction.guild.id, ticket["seller_id"], channel.id)
