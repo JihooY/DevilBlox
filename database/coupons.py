@@ -28,9 +28,14 @@ class CouponStore:
 
     async def ensure_indexes(self):
         await self.coupons.create_index([("guild_id", 1), ("code", 1)], unique=True)
-        await self.user_coupons.create_index(
-            [("guild_id", 1), ("user_id", 1), ("code", 1)], unique=True
+        ownership_keys = [("guild_id", 1), ("user_id", 1), ("code", 1)]
+        ownership_indexes = await self.user_coupons.index_information()
+        ownership_index_exists = any(
+            list(spec.get("key", [])) == ownership_keys
+            for spec in ownership_indexes.values()
         )
+        if not ownership_index_exists:
+            await self.user_coupons.create_index(ownership_keys, unique=True)
         await self.promotions.create_index([("guild_id", 1), ("code", 1)], unique=True)
         await self.promotions.create_index([("guild_id", 1), ("invite_code", 1)], unique=True)
         await self.invites.create_index([("guild_id", 1), ("user_id", 1)], unique=True)
