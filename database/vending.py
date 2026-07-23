@@ -169,7 +169,7 @@ class ProductStore:
             .to_list(length=limit)
         )
 
-    async def list_by_category(self, guild_id: int, category_id: str, limit: int = 25):
+    async def list_by_category(self, guild_id: int, category_id: str, limit: int | None = None):
         return (
             await self.collection.find(
                 {
@@ -458,7 +458,7 @@ class VendingLogStore:
         )
         return doc is not None
 
-    async def list_owned_products(self, guild_id: int, user_id: int, limit: int = 25):
+    async def list_owned_products(self, guild_id: int, user_id: int, limit: int | None = None):
         return (
             await self.user_products.find({"guild_id": guild_id, "user_id": user_id, "status": "purchased"})
             .sort("purchased_at", -1)

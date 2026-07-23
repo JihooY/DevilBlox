@@ -143,8 +143,24 @@ def embed_asset_kwargs(embed: discord.Embed, folder: str, filename: str) -> dict
 
 
 def embed_gif_kwargs(embed: discord.Embed, filename: str) -> dict:
-    return embed_asset_kwargs(embed, "gifs", filename)
+    from utils.gifs import gif_file, gif_media_url
+
+    media_url = gif_media_url(filename)
+    if media_url is None:
+        return embed_kwargs(embed)
+    embed.set_image(url=media_url)
+    files = branded_files(gif_file(filename))
+    return {"embed": brand_embed(embed), "files": files} if files else {"embed": brand_embed(embed)}
 
 
 def embed_banner_kwargs(embed: discord.Embed, filename: str) -> dict:
+    if filename.casefold().endswith(".gif"):
+        from utils.gifs import gif_file_from_folder, gif_media_url
+
+        media_url = gif_media_url(filename)
+        if media_url is None:
+            return embed_kwargs(embed)
+        embed.set_image(url=media_url)
+        files = branded_files(gif_file_from_folder(filename, "banners"))
+        return {"embed": brand_embed(embed), "files": files} if files else {"embed": brand_embed(embed)}
     return embed_asset_kwargs(embed, "banners", filename)

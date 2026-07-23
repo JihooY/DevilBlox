@@ -153,10 +153,11 @@ class SupportCog(commands.Cog):
             await allow_ticket_access(channel, guild.me)
         await self.repos.tickets.create(guild.id, "support", interaction.user.id, channel.id)
         embed = info_embed("SUPPORT", f"{interaction.user.mention}님이 문의를 시작했습니다.")
-        await channel.send(
+        ticket_message = await channel.send(
             content=f"{interaction.user.mention} {admin_role.mention}",
             **random_embed_gif_kwargs(embed, TICKET_OPEN_GIFS),
         )
+        await self.repos.tickets.set_panel_message(guild.id, channel.id, ticket_message.id)
         await interaction.followup.send(embed=success_embed("문의 티켓 생성 완료", channel.mention), ephemeral=True)
 
     @app_commands.command(name="문의패널", description="현재 채널에 문의 패널을 생성합니다.")

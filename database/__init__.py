@@ -1,5 +1,6 @@
 from .coupons import CouponStore
 from .lottery import LotteryStore
+from .operations import OperationsStateStore
 from .reviews import ReviewStore
 from .settings import GuildSettingsStore
 from .stock import StockStore
@@ -25,6 +26,7 @@ class Repositories:
         self.stock = StockStore(db)
         self.reviews = ReviewStore(db)
         self.warnings = WarningStore(db)
+        self.operations = OperationsStateStore(db)
 
     async def ensure_indexes(self):
         stores = (
@@ -42,6 +44,7 @@ class Repositories:
             self.stock,
             self.reviews,
             self.warnings,
+            self.operations,
         )
         for store in stores:
             await store.ensure_indexes()

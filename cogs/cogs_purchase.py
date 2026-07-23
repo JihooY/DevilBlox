@@ -17,6 +17,7 @@ from utils.gifs import (
     TICKET_STATE_GIFS,
     choose_gif,
     gif_file,
+    gif_media_url,
     random_embed_gif_kwargs,
 )
 from utils.panels import restore_panel_message, save_panel_location
@@ -229,8 +230,9 @@ class PurchaseTicketView(discord.ui.LayoutView):
         lines.extend(["", "계좌는 `/계좌확인` 명령어로 본인에게만 확인할 수 있습니다."])
         box = discord.ui.Container(accent_color=0x5865F2)
         box.add_item(discord.ui.Section(discord.ui.TextDisplay("\n".join(lines)), accessory=discord.ui.Thumbnail(BRAND_LOGO_URL)))
-        if gif_name:
-            box.add_item(discord.ui.MediaGallery(discord.MediaGalleryItem(f"attachment://{gif_name}")))
+        media_url = gif_media_url(gif_name)
+        if media_url:
+            box.add_item(discord.ui.MediaGallery(discord.MediaGalleryItem(media_url)))
         self.add_item(box)
 
 
@@ -436,10 +438,11 @@ class PurchaseCog(commands.Cog):
 
         gif_name = choose_gif(TICKET_OPEN_GIFS)
         ticket_view = PurchaseTicketView(buyer=interaction.user, seller=seller, coupon=coupon, gif_name=gif_name)
-        await channel.send(
+        ticket_message = await channel.send(
             view=ticket_view,
             files=branded_files(gif_file(gif_name)),
         )
+        await self.repos.tickets.set_panel_message(guild.id, channel.id, ticket_message.id)
         await interaction.followup.send(embed=success_embed("구매 티켓 생성 완료", channel.mention), ephemeral=True)
 
     async def build_seller_payment_account_view(

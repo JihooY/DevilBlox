@@ -237,10 +237,11 @@ class MiddlemanCog(commands.Cog):
             middleman_id=middleman.id,
         )
         embed = info_embed("MIDDLEMAN SERVICE", "중개 티켓이 시작되었습니다.")
-        await channel.send(
+        ticket_message = await channel.send(
             content=f"{interaction.user.mention} {counterparty.mention} {middleman.mention}",
             **random_embed_gif_kwargs(embed, TICKET_OPEN_GIFS),
         )
+        await self.repos.tickets.set_panel_message(guild.id, channel.id, ticket_message.id)
         draft_view.open_button.disabled = True
         if draft_view.message:
             await draft_view.message.edit(embed=success_embed("중개 티켓 생성 완료", channel.mention), view=None)

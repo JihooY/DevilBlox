@@ -67,6 +67,18 @@ class TicketStore:
             {"$set": update},
         )
 
+    async def set_panel_message(self, guild_id: int, channel_id: int, message_id: int) -> None:
+        await self.collection.update_one(
+            {"guild_id": guild_id, "channel_id": channel_id},
+            {"$set": {"panel_message_id": message_id, "updated_at": _now()}},
+        )
+
+    async def list_open_for_media_cleanup(self, guild_id: int) -> list[dict]:
+        return await self.collection.find(
+            {"guild_id": guild_id, "status": "open"},
+            {"channel_id": 1, "panel_message_id": 1, "kind": 1},
+        ).to_list(length=None)
+
     async def save_transcript(self, ticket: dict, messages: list[dict]):
         now = _now()
         guild_id = ticket["guild_id"]

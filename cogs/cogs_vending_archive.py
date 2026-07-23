@@ -31,8 +31,13 @@ from utils.gifs import (
     SUCCESS_GIFS,
     VENDING_PANEL_GIFS,
     choose_gif,
+    gif_delivery_status,
     gif_file,
+    gif_media_url,
+    is_gif_filename,
+    message_media_urls,
     random_embed_gif_kwargs,
+    retained_non_gif_attachments,
 )
 from utils.panels import save_panel_location
 from utils.roles import has_role
@@ -43,14 +48,20 @@ COLOR_VENDING = 0x5865F2
 COLOR_ARCHIVE = 0x2ECC71
 MAX_CHARGE_PROOF_BYTES = 8 * 1024 * 1024
 IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".gif"}
+SELECT_OPTION_LIMIT = 25
+
+
+def chunked(items: list[dict], size: int = SELECT_OPTION_LIMIT) -> list[list[dict]]:
+    return [items[index : index + size] for index in range(0, len(items), size)]
 
 
 def add_panel_gif(container: discord.ui.Container, filename: str | None, description: str):
-    if not filename:
+    media_url = gif_media_url(filename)
+    if not media_url:
         return
     container.add_item(
         discord.ui.MediaGallery(
-            discord.MediaGalleryItem(f"attachment://{filename}", description=description)
+            discord.MediaGalleryItem(media_url, description=description)
         )
     )
 
@@ -347,11 +358,19 @@ class ArchiveResultView(discord.ui.View):
 
 
 class CategorySelect(discord.ui.Select):
-    def __init__(self, cog: "VendingArchiveCog", categories: list[dict], mode: str):
+    def __init__(
+        self,
+        cog: "VendingArchiveCog",
+        categories: list[dict],
+        mode: str,
+        *,
+        page_index: int = 0,
+        page_count: int = 1,
+    ):
         self.cog = cog
         self.mode = mode
         options = []
-        for category in categories[:25]:
+        for category in categories[:SELECT_OPTION_LIMIT]:
             label = category.get("name") or category.get("category_id") or "카테고리"
             option = discord.SelectOption(
                 label=str(label)[:100],
@@ -365,8 +384,11 @@ class CategorySelect(discord.ui.Select):
         if not options:
             options.append(discord.SelectOption(label="등록된 카테고리가 없습니다.", value="none"))
 
+        placeholder = "카테고리를 선택하세요."
+        if page_count > 1:
+            placeholder = f"카테고리 선택 ({page_index + 1}/{page_count})"
         super().__init__(
-            placeholder="카테고리를 선택하세요.",
+            placeholder=placeholder,
             min_values=1,
             max_values=1,
             options=options,
@@ -391,16 +413,36 @@ class CategoryMenuView(discord.ui.LayoutView):
         container = discord.ui.Container(accent_color=COLOR_VENDING)
         add_brand_section(container, f"## {title}\n카테고리를 선택하면 해당 카테고리의 상품이 표시됩니다.")
         container.add_item(discord.ui.Separator())
-        container.add_item(discord.ui.ActionRow(CategorySelect(cog, categories, mode)))
+        category_chunks = chunked(categories)
+        for page_index, category_chunk in enumerate(category_chunks):
+            container.add_item(
+                discord.ui.ActionRow(
+                    CategorySelect(
+                        cog,
+                        category_chunk,
+                        mode,
+                        page_index=page_index,
+                        page_count=len(category_chunks),
+                    )
+                )
+            )
         self.add_item(container)
 
 
 class ProductSelect(discord.ui.Select):
-    def __init__(self, cog: "VendingArchiveCog", products: list[dict], mode: str):
+    def __init__(
+        self,
+        cog: "VendingArchiveCog",
+        products: list[dict],
+        mode: str,
+        *,
+        page_index: int = 0,
+        page_count: int = 1,
+    ):
         self.cog = cog
         self.mode = mode
         options = []
-        for product in products[:25]:
+        for product in products[:SELECT_OPTION_LIMIT]:
             product_id = product.get("product_id") or product.get("product_id_lower")
             price = int(product.get("price", 0))
             description = f"{price:,}원 · ID: {product_id}"
@@ -414,8 +456,11 @@ class ProductSelect(discord.ui.Select):
         if not options:
             options.append(discord.SelectOption(label="등록된 상품이 없습니다.", value="none"))
 
+        placeholder = "상품을 선택하세요."
+        if page_count > 1:
+            placeholder = f"상품 선택 ({page_index + 1}/{page_count})"
         super().__init__(
-            placeholder="상품을 선택하세요.",
+            placeholder=placeholder,
             min_values=1,
             max_values=1,
             options=options,
@@ -447,7 +492,19 @@ class ProductMenuView(discord.ui.LayoutView):
         container = discord.ui.Container(accent_color=COLOR_VENDING)
         add_brand_section(container, "\n".join(lines))
         container.add_item(discord.ui.Separator())
-        container.add_item(discord.ui.ActionRow(ProductSelect(cog, products, mode)))
+        product_chunks = chunked(products)
+        for page_index, product_chunk in enumerate(product_chunks):
+            container.add_item(
+                discord.ui.ActionRow(
+                    ProductSelect(
+                        cog,
+                        product_chunk,
+                        mode,
+                        page_index=page_index,
+                        page_count=len(product_chunks),
+                    )
+                )
+            )
         self.add_item(container)
 
 
@@ -545,10 +602,17 @@ class DiscountMenuView(discord.ui.LayoutView):
 
 
 class DownloadSelect(discord.ui.Select):
-    def __init__(self, cog: "VendingArchiveCog", owned_products: list[dict]):
+    def __init__(
+        self,
+        cog: "VendingArchiveCog",
+        owned_products: list[dict],
+        *,
+        page_index: int = 0,
+        page_count: int = 1,
+    ):
         self.cog = cog
         options = []
-        for owned in owned_products[:25]:
+        for owned in owned_products[:SELECT_OPTION_LIMIT]:
             label = owned.get("title") or owned.get("product_id") or "상품"
             product_id = owned.get("product_id") or owned.get("product_id_lower")
             options.append(
@@ -558,8 +622,11 @@ class DownloadSelect(discord.ui.Select):
                     description=f"ID: {product_id}"[:100],
                 )
             )
+        placeholder = "다운로드할 상품을 모두 선택하세요."
+        if page_count > 1:
+            placeholder = f"다운로드 상품 선택 ({page_index + 1}/{page_count})"
         super().__init__(
-            placeholder="다운로드할 상품을 모두 선택하세요.",
+            placeholder=placeholder,
             min_values=1,
             max_values=max(1, min(len(options), 25)),
             options=options,
@@ -575,7 +642,18 @@ class DownloadSelectView(discord.ui.LayoutView):
         container = discord.ui.Container(accent_color=COLOR_VENDING)
         add_brand_section(container, "## 다운로드\n링크를 다시 받을 상품을 하나 이상 선택하세요.")
         container.add_item(discord.ui.Separator())
-        container.add_item(discord.ui.ActionRow(DownloadSelect(cog, owned_products)))
+        owned_chunks = chunked(owned_products)
+        for page_index, owned_chunk in enumerate(owned_chunks):
+            container.add_item(
+                discord.ui.ActionRow(
+                    DownloadSelect(
+                        cog,
+                        owned_chunk,
+                        page_index=page_index,
+                        page_count=len(owned_chunks),
+                    )
+                )
+            )
         self.add_item(container)
 
 
@@ -708,6 +786,18 @@ class VendingArchiveCog(commands.Cog):
 
     async def build_vending_panel_view(self, guild_id: int, gif_name: str | None = None) -> VendingPanelView:
         return VendingPanelView(self, stats=await self.vending_panel_stats(guild_id), gif_name=gif_name)
+
+    async def build_tracked_panel_view(
+        self,
+        guild_id: int,
+        channel_key: str | None,
+        gif_name: str | None = None,
+    ) -> discord.ui.LayoutView | None:
+        if channel_key == "vending":
+            return await self.build_vending_panel_view(guild_id, gif_name)
+        if channel_key == "archive":
+            return ArchivePanelView(self, gif_name=gif_name)
+        return None
 
     async def refresh_vending_panel(self, guild: discord.Guild, *, rotate_image: bool = False):
         stats = await self.vending_panel_stats(guild.id)
@@ -1426,18 +1516,34 @@ class VendingArchiveCog(commands.Cog):
             return False
         try:
             message = await channel.fetch_message(message_id)
-            image_filename = choose_gif(image_attachment_filename, message.attachments, force_new=rotate_image)
+            image_filename = choose_gif(
+                image_attachment_filename,
+                message.attachments,
+                force_new=rotate_image,
+                existing_urls=message_media_urls(message),
+            )
             panel_view = view(image_filename) if callable(view) else view
             update = {"content": None, "embeds": [], "view": panel_view}
+            local_mode = gif_delivery_status().effective_mode == "local"
             needs_logo = not any(attachment.filename == BRAND_LOGO_FILENAME for attachment in message.attachments)
-            needs_image = bool(image_filename) and not any(
+            needs_image = local_mode and bool(image_filename) and not any(
                 attachment.filename == image_filename for attachment in message.attachments
             )
-            if needs_logo or needs_image:
+            if needs_image:
                 file = gif_file(image_filename) if image_filename else None
-                attachments = branded_files(file)
+                retained = retained_non_gif_attachments(message)
+                if needs_logo:
+                    attachments = [*branded_files(file), *retained]
+                else:
+                    attachments = [*retained, *([file] if file is not None else [])]
                 if attachments:
                     update["attachments"] = attachments
+            elif needs_logo:
+                update["attachments"] = [*branded_files(), *message.attachments]
+            elif not local_mode and any(
+                is_gif_filename(attachment.filename) for attachment in message.attachments
+            ):
+                update["attachments"] = retained_non_gif_attachments(message)
             await message.edit(**update)
         except discord.NotFound:
             await self.repos.settings.set_value(guild.id, "meta", meta_key, None)

@@ -41,6 +41,7 @@ CHANNEL_KEYS = {
     "stock_control": "재고 컨트롤",
     "vending": "자판기 패널",
     "archive": "아카이브 패널",
+    "operations": "서버 관리 패널",
 }
 
 CATEGORY_KEYS = {
@@ -92,6 +93,7 @@ LEGACY_SETTING_MAP = {
     "purchase_panel_msg": ("meta", "purchase_panel_message_id"),
     "vending_panel_msg": ("meta", "vending_panel_message_id"),
     "archive_panel_msg": ("meta", "archive_panel_message_id"),
+    "operations_panel_msg": ("meta", "operations_panel_message_id"),
     "support_panel_msg": ("meta", "support_panel_message_id"),
     "verify_panel_msg": ("meta", "verify_panel_message_id"),
 }
@@ -120,8 +122,10 @@ def default_settings(guild_id: int) -> dict:
             "purchase_panel_message_id": None,
             "vending_panel_message_id": None,
             "archive_panel_message_id": None,
+            "operations_panel_message_id": None,
             "support_panel_message_id": None,
             "verify_panel_message_id": None,
+            "active_panels": [],
         },
         "created_at": _now(),
         "updated_at": _now(),
@@ -164,6 +168,39 @@ class GuildSettingsStore:
         await self.collection.update_one(
             {"_id": guild_id},
             {"$set": {f"{section}.{key}": value, "updated_at": _now()}},
+        )
+
+    async def register_panel(
+        self,
+        guild_id: int,
+        *,
+        channel_key: str,
+        meta_key: str,
+        channel_id: int,
+        message_id: int,
+    ) -> None:
+        await self.ensure_guild(guild_id)
+        panel = {
+            "channel_key": channel_key,
+            "meta_key": meta_key,
+            "channel_id": channel_id,
+            "message_id": message_id,
+        }
+        await self.collection.update_one(
+            {"_id": guild_id},
+            {
+                "$addToSet": {"meta.active_panels": panel},
+                "$set": {"updated_at": _now()},
+            },
+        )
+
+    async def unregister_panel(self, guild_id: int, message_id: int) -> None:
+        await self.collection.update_one(
+            {"_id": guild_id},
+            {
+                "$pull": {"meta.active_panels": {"message_id": message_id}},
+                "$set": {"updated_at": _now()},
+            },
         )
 
     async def apply_legacy_settings(self, guild_id: int, settings: dict[str, int]):
