@@ -9,8 +9,8 @@ from discord import app_commands
 from discord.ext import commands
 
 from database.reviews import ReviewStore
-from utils.embeds import branded_files, error_embed, info_embed, success_embed
-from utils.gifs import SUCCESS_GIFS, random_embed_gif_kwargs
+from utils.embeds import BRAND_LOGO_URL, branded_files, error_embed, info_embed, success_embed
+from utils.gifs import SUCCESS_GIFS, choose_gif, gif_file, gif_media_url
 
 log = logging.getLogger(__name__)
 
@@ -107,18 +107,64 @@ class ReviewModal(discord.ui.Modal):
         )
 
 
-class ReviewRequestView(discord.ui.View):
-    def __init__(self, cog: "ReviewsCog", review_id: str):
+class ReviewRequestView(discord.ui.LayoutView):
+    def __init__(
+        self,
+        cog: "ReviewsCog",
+        review_id: str,
+        *,
+        review: dict | None = None,
+        gif_name: str | None = None,
+    ):
         super().__init__(timeout=None)
         self.cog = cog
         self.review_id = review_id
+
+        review = review or {}
+        product_title = str(review.get("product_title") or "구매 상품")
+        seller_id = review.get("seller_id")
+        category_id = str(review.get("category_id") or "")
+        category_name = str(review.get("category_name") or category_id)
+        lines = [
+            "## 구매 후기 작성",
+            "구매 감사합니다. 아래 버튼을 눌러 별점과 후기를 남겨주세요.",
+            "",
+            f"### 구매 상품\n{product_title}",
+            f"### 구매 셀러\n{f'<@{seller_id}>' if seller_id else '-'}",
+        ]
+        if category_id:
+            lines.append(f"### 카테고리\n{category_name} (`{category_id}`)")
+        lines.extend(
+            (
+                f"### 구매 시간\n{discord_time(review.get('purchased_at'))}",
+                f"-# 후기 ID: {review_id}",
+            )
+        )
+
+        container = discord.ui.Container(accent_color=0x5865F2)
+        container.add_item(
+            discord.ui.Section(
+                discord.ui.TextDisplay("\n".join(lines)),
+                accessory=discord.ui.Thumbnail(BRAND_LOGO_URL, description="DevilBlox logo"),
+            )
+        )
+        media_url = gif_media_url(gif_name)
+        if media_url:
+            container.add_item(discord.ui.Separator())
+            container.add_item(
+                discord.ui.MediaGallery(
+                    discord.MediaGalleryItem(media_url, description="DevilBlox review request")
+                )
+            )
+        container.add_item(discord.ui.Separator())
         button = discord.ui.Button(
             label="후기 작성",
             style=discord.ButtonStyle.primary,
             custom_id=f"devilblox:review:write:{review_id}",
         )
         button.callback = self.write_review
-        self.add_item(button)
+        container.add_item(discord.ui.ActionRow(button))
+        self.add_item(container)
 
     async def write_review(self, interaction: discord.Interaction):
         try:
@@ -174,7 +220,7 @@ class ReviewsCog(commands.Cog):
             review_id = str(review.get("_id") or "")
             if not review_id or review_id in registered:
                 continue
-            self.bot.add_view(ReviewRequestView(self, review_id))
+            self.bot.add_view(ReviewRequestView(self, review_id, review=review))
             registered.add(review_id)
 
     async def fetch_user(self, user_id: int) -> discord.User | discord.Member | None:
@@ -226,20 +272,12 @@ class ReviewsCog(commands.Cog):
         if user is None:
             return False
 
-        embed = info_embed(
-            "구매 후기 작성",
-            "구매 감사합니다. 아래 버튼을 눌러 별점과 후기를 남겨주세요.",
-        )
-        embed.add_field(name="구매 상품", value=product_title or "-", inline=False)
-        embed.add_field(name="구매 셀러", value=f"<@{seller_id}>" if seller_id else "-", inline=True)
-        if category_id:
-            category_label = category_name or category_id
-            embed.add_field(name="카테고리", value=f"{category_label} (`{category_id}`)", inline=True)
-        embed.add_field(name="구매 시간", value=discord_time(purchased_at), inline=False)
-        embed.set_footer(text=f"후기 ID: {doc['_id']}")
-
+        gif_name = choose_gif(SUCCESS_GIFS)
         try:
-            await user.send(**random_embed_gif_kwargs(embed, SUCCESS_GIFS), view=ReviewRequestView(self, doc["_id"]))
+            await user.send(
+                view=ReviewRequestView(self, doc["_id"], review=doc, gif_name=gif_name),
+                files=branded_files(gif_file(gif_name)),
+            )
         except discord.HTTPException:
             return False
         return True

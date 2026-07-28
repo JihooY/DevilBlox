@@ -35,6 +35,7 @@ class UserStore:
                     "middleman_anonymous": False,
                     "points": 0,
                     "cash": 0,
+                    "cash_operations": [],
                     "verified_at": None,
                     "created_at": now,
                 },
@@ -70,6 +71,9 @@ class UserStore:
         )
 
     async def add_cash(self, guild_id: int, user_id: int, amount: int):
+        amount = int(amount)
+        if amount <= 0:
+            raise ValueError("cash credit amount must be greater than zero")
         await self.ensure_user(guild_id, user_id)
         await self.collection.update_one(
             {"_id": user_key(guild_id, user_id)},
@@ -78,6 +82,9 @@ class UserStore:
         return await self.get(guild_id, user_id)
 
     async def spend_cash(self, guild_id: int, user_id: int, amount: int):
+        amount = int(amount)
+        if amount < 0:
+            raise ValueError("cash debit amount must be zero or greater")
         await self.ensure_user(guild_id, user_id)
         before = await self.collection.find_one_and_update(
             {"_id": user_key(guild_id, user_id), "cash": {"$gte": amount}},
@@ -98,6 +105,131 @@ class UserStore:
             "after_cash": int(before.get("cash", 0)) - amount,
             "user": await self.get(guild_id, user_id),
         }
+
+    async def add_cash_once(
+        self,
+        guild_id: int,
+        user_id: int,
+        amount: int,
+        *,
+        operation_id: str,
+        reason: str = "",
+    ):
+        """Credit cash exactly once for a stable business operation ID.
+
+        The balance and operation marker live in the same user document, so a
+        retry after a process or network failure cannot credit the user twice.
+        """
+        amount = int(amount)
+        operation_id = str(operation_id).strip()
+        if amount <= 0:
+            raise ValueError("cash credit amount must be greater than zero")
+        if not operation_id:
+            raise ValueError("operation_id is required")
+
+        await self.ensure_user(guild_id, user_id)
+        now = _now()
+        current_cash = {"$ifNull": ["$cash", 0]}
+        operation = {
+            "operation_id": operation_id,
+            "kind": "credit",
+            "amount": amount,
+            "before_cash": current_cash,
+            "after_cash": {"$add": [current_cash, amount]},
+            "reason": str(reason).strip()[:200],
+            "created_at": now,
+        }
+        user = await self.collection.find_one_and_update(
+            {
+                "_id": user_key(guild_id, user_id),
+                "cash_operations.operation_id": {"$ne": operation_id},
+            },
+            [
+                {
+                    "$set": {
+                        "cash": {"$add": [current_cash, amount]},
+                        "cash_operations": {
+                            "$concatArrays": [
+                                {"$ifNull": ["$cash_operations", []]},
+                                [operation],
+                            ]
+                        },
+                        "updated_at": now,
+                    }
+                }
+            ],
+            return_document=ReturnDocument.AFTER,
+        )
+        applied = user is not None
+        if user is None:
+            user = await self.get(guild_id, user_id)
+        saved = _cash_operation(user, operation_id)
+        if saved is None:
+            raise RuntimeError("cash credit operation was not persisted")
+        return _cash_operation_result(user, saved, applied=applied)
+
+    async def spend_cash_once(
+        self,
+        guild_id: int,
+        user_id: int,
+        amount: int,
+        *,
+        operation_id: str,
+        reason: str = "",
+    ):
+        """Debit cash once, returning the original result on every retry."""
+        amount = int(amount)
+        operation_id = str(operation_id).strip()
+        if amount < 0:
+            raise ValueError("cash debit amount must be zero or greater")
+        if not operation_id:
+            raise ValueError("operation_id is required")
+
+        await self.ensure_user(guild_id, user_id)
+        now = _now()
+        current_cash = {"$ifNull": ["$cash", 0]}
+        current_spent = {"$ifNull": ["$accrued_spent", 0]}
+        current_points = {"$ifNull": ["$points", 0]}
+        operation = {
+            "operation_id": operation_id,
+            "kind": "debit",
+            "amount": amount,
+            "before_cash": current_cash,
+            "after_cash": {"$subtract": [current_cash, amount]},
+            "reason": str(reason).strip()[:200],
+            "created_at": now,
+        }
+        user = await self.collection.find_one_and_update(
+            {
+                "_id": user_key(guild_id, user_id),
+                "cash": {"$gte": amount},
+                "cash_operations.operation_id": {"$ne": operation_id},
+            },
+            [
+                {
+                    "$set": {
+                        "cash": {"$subtract": [current_cash, amount]},
+                        "accrued_spent": {"$add": [current_spent, amount]},
+                        "points": {"$add": [current_points, amount // 1000]},
+                        "cash_operations": {
+                            "$concatArrays": [
+                                {"$ifNull": ["$cash_operations", []]},
+                                [operation],
+                            ]
+                        },
+                        "updated_at": now,
+                    }
+                }
+            ],
+            return_document=ReturnDocument.AFTER,
+        )
+        applied = user is not None
+        if user is None:
+            user = await self.get(guild_id, user_id)
+        saved = _cash_operation(user, operation_id)
+        if saved is None:
+            return None
+        return _cash_operation_result(user, saved, applied=applied)
 
     async def set_grade(self, guild_id: int, user_id: int, role_id: int | None):
         await self.ensure_user(guild_id, user_id)
@@ -147,3 +279,26 @@ class UserStore:
             },
             upsert=True,
         )
+
+
+def _cash_operation(user: dict | None, operation_id: str) -> dict | None:
+    if not user:
+        return None
+    return next(
+        (
+            operation
+            for operation in user.get("cash_operations", [])
+            if operation.get("operation_id") == operation_id
+        ),
+        None,
+    )
+
+
+def _cash_operation_result(user: dict, operation: dict, *, applied: bool) -> dict:
+    return {
+        "applied": applied,
+        "operation_id": operation["operation_id"],
+        "before_cash": int(operation.get("before_cash", 0)),
+        "after_cash": int(operation.get("after_cash", 0)),
+        "user": user,
+    }

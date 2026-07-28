@@ -184,7 +184,8 @@ class ReviewStore:
                 }
             },
         ]
-        rows = await self.collection.aggregate(pipeline).to_list(length=1)
+        cursor = await self.collection.aggregate(pipeline)
+        rows = await cursor.to_list(length=1)
         if not rows:
             return None
 
@@ -244,7 +245,8 @@ class ReviewStore:
             {"$sort": {"rating_count": -1}},
             {"$limit": limit},
         ]
-        rows = await self.collection.aggregate(pipeline).to_list(length=limit)
+        cursor = await self.collection.aggregate(pipeline)
+        rows = await cursor.to_list(length=limit)
         now = _now()
         for row in rows:
             seller_id = int(row["_id"])

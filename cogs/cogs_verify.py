@@ -9,10 +9,9 @@ from discord.ext import commands, tasks
 
 from utils.embeds import (
     BRAND_LOGO_FILENAME,
+    BRAND_LOGO_URL,
     COLOR_DARK,
-    brand_embed,
     branded_files,
-    error_embed,
     success_embed,
 )
 from utils.gifs import (
@@ -34,31 +33,84 @@ MAX_ATTEMPTS = 3
 
 
 class NumberButton(discord.ui.Button):
-    def __init__(self, number: str, row: int):
-        super().__init__(label=number, style=discord.ButtonStyle.secondary, row=row)
+    def __init__(self, pad: "VerifyPad", number: str, *, disabled: bool = False):
+        super().__init__(
+            label=number,
+            style=discord.ButtonStyle.secondary,
+            disabled=disabled,
+        )
+        self.pad = pad
         self.number = number
 
     async def callback(self, interaction: discord.Interaction):
-        await self.view.press_number(interaction, self.number)
+        await self.pad.press_number(interaction, self.number)
 
 
 class ClearButton(discord.ui.Button):
-    def __init__(self):
-        super().__init__(label="DELETE", style=discord.ButtonStyle.danger, row=3)
+    def __init__(self, pad: "VerifyPad", *, disabled: bool = False):
+        super().__init__(
+            label="DELETE",
+            style=discord.ButtonStyle.danger,
+            disabled=disabled,
+        )
+        self.pad = pad
 
     async def callback(self, interaction: discord.Interaction):
-        await self.view.clear(interaction)
+        await self.pad.clear(interaction)
 
 
 class ConfirmButton(discord.ui.Button):
-    def __init__(self):
-        super().__init__(label="CONFIRM", style=discord.ButtonStyle.success, row=3)
+    def __init__(self, pad: "VerifyPad", *, disabled: bool = False):
+        super().__init__(
+            label="CONFIRM",
+            style=discord.ButtonStyle.success,
+            disabled=disabled,
+        )
+        self.pad = pad
 
     async def callback(self, interaction: discord.Interaction):
-        await self.view.confirm(interaction)
+        await self.pad.confirm(interaction)
 
 
-class VerifyPad(discord.ui.View):
+def _add_brand_section(container: discord.ui.Container, content: str):
+    container.add_item(
+        discord.ui.Section(
+            discord.ui.TextDisplay(content),
+            accessory=discord.ui.Thumbnail(
+                BRAND_LOGO_URL,
+                description="DevilBlox logo",
+            ),
+        )
+    )
+
+
+def _add_gif_media(
+    container: discord.ui.Container,
+    gif_name: str | None,
+    description: str,
+):
+    media_url = gif_media_url(gif_name)
+    if media_url:
+        container.add_item(discord.ui.Separator())
+        container.add_item(
+            discord.ui.MediaGallery(
+                discord.MediaGalleryItem(media_url, description=description)
+            )
+        )
+
+
+def _verify_send_kwargs(
+    view: discord.ui.LayoutView,
+    media_file: discord.File | None,
+) -> dict:
+    kwargs = {"view": view}
+    files = branded_files(media_file)
+    if files:
+        kwargs["files"] = files
+    return kwargs
+
+
+class VerifyPad(discord.ui.LayoutView):
     def __init__(self, cog: "VerificationCog", user_id: int, code: str, gif_name: str | None):
         super().__init__(timeout=VERIFY_TIMEOUT)
         self.cog = cog
@@ -69,18 +121,19 @@ class VerifyPad(discord.ui.View):
         self.attempts = 0
         self.created_at = time.time()
         self.message: discord.WebhookMessage | None = None
-
-        numbers = list("123456789")
-        secrets.SystemRandom().shuffle(numbers)
-        for index, number in enumerate(numbers):
-            self.add_item(NumberButton(number, index // 3))
-        self.add_item(ClearButton())
-        self.add_item(NumberButton("0", 3))
-        self.add_item(ConfirmButton())
+        self.number_order = list("123456789")
+        secrets.SystemRandom().shuffle(self.number_order)
+        self.controls_disabled = False
+        self.display_status = "WAITING INPUT"
+        self.accent_color = COLOR_DARK
+        self.note: str | None = None
+        self._render()
 
     def disable_controls(self):
-        for item in self.children:
-            item.disabled = True
+        self.controls_disabled = True
+        for item in self.walk_children():
+            if isinstance(item, discord.ui.Button):
+                item.disabled = True
 
     def _asset_url(self) -> str | None:
         return gif_media_url(self.gif_name)
@@ -88,22 +141,64 @@ class VerifyPad(discord.ui.View):
     def _remaining(self) -> int:
         return max(0, VERIFY_TIMEOUT - int(time.time() - self.created_at))
 
-    def build_embed(self, status: str = "WAITING INPUT", color: int = COLOR_DARK) -> discord.Embed:
+    def _content(self) -> str:
         filled = "■ " * len(self.input_code)
         empty = "□ " * (4 - len(self.input_code))
-        embed = discord.Embed(
-            title="DEVILBLOX VERIFICATION",
-            description="화면의 보안 코드를 아래 버튼으로 입력하세요.",
-            color=color,
+        lines = [
+            "## DEVILBLOX VERIFICATION",
+            "화면의 보안 코드를 아래 버튼으로 입력하세요.",
+            "",
+            f"### 보안 코드\n```fix\n{self.code}\n```",
+            f"### 입력 상태\n```fix\n{filled}{empty}\n```",
+            f"**상태**  `{self.display_status}`",
+            f"**남은 시간**  `{self._remaining()}초` · "
+            f"**남은 시도**  `{max(0, MAX_ATTEMPTS - self.attempts)}`",
+        ]
+        if self.note:
+            lines.extend(("", self.note))
+        return "\n".join(lines)
+
+    def _render(
+        self,
+        status: str | None = None,
+        color: int | None = None,
+        note: str | None = None,
+    ) -> None:
+        if status is not None:
+            self.display_status = status
+        if color is not None:
+            self.accent_color = color
+        self.note = note
+        self.clear_items()
+        container = discord.ui.Container(accent_color=self.accent_color)
+        _add_brand_section(container, self._content())
+        _add_gif_media(container, self.gif_name, "DevilBlox verification challenge")
+        container.add_item(discord.ui.Separator(spacing=discord.SeparatorSpacing.small))
+
+        for index in range(0, len(self.number_order), 3):
+            container.add_item(
+                discord.ui.ActionRow(
+                    *(
+                        NumberButton(
+                            self,
+                            number,
+                            disabled=self.controls_disabled,
+                        )
+                        for number in self.number_order[index : index + 3]
+                    )
+                )
+            )
+        container.add_item(
+            discord.ui.ActionRow(
+                ClearButton(self, disabled=self.controls_disabled),
+                NumberButton(self, "0", disabled=self.controls_disabled),
+                ConfirmButton(self, disabled=self.controls_disabled),
+            )
         )
-        embed.add_field(name="보안 코드", value=f"```fix\n{self.code}\n```", inline=True)
-        embed.add_field(name="입력 상태", value=f"```fix\n{filled}{empty}\n```", inline=True)
-        embed.add_field(name="상태", value=f"```yaml\n{status}\n```", inline=False)
-        embed.add_field(name="남은 시간", value=f"`{self._remaining()}초`", inline=True)
-        embed.add_field(name="남은 시도", value=f"`{MAX_ATTEMPTS - self.attempts}`", inline=True)
-        if self._asset_url():
-            embed.set_image(url=self._asset_url())
-        return embed
+        self.add_item(container)
+
+    def _edit_kwargs(self) -> dict:
+        return {"content": None, "embeds": [], "view": self}
 
     async def interaction_allowed(self, interaction: discord.Interaction) -> bool:
         if interaction.user.id == self.user_id:
@@ -116,13 +211,15 @@ class VerifyPad(discord.ui.View):
             return
         if len(self.input_code) < 4:
             self.input_code += number
-        await interaction.response.edit_message(embed=self.build_embed(), view=self)
+        self._render()
+        await interaction.response.edit_message(**self._edit_kwargs())
 
     async def clear(self, interaction: discord.Interaction):
         if not await self.interaction_allowed(interaction):
             return
         self.input_code = ""
-        await interaction.response.edit_message(embed=self.build_embed(), view=self)
+        self._render()
+        await interaction.response.edit_message(**self._edit_kwargs())
 
     async def confirm(self, interaction: discord.Interaction):
         if not await self.interaction_allowed(interaction):
@@ -133,65 +230,89 @@ class VerifyPad(discord.ui.View):
             self.input_code = ""
             if self.attempts >= MAX_ATTEMPTS:
                 self.disable_controls()
-                await interaction.response.edit_message(
-                    embed=self.build_embed("LOCKED", 0xE5484D),
-                    view=self,
+                self._render(
+                    "LOCKED",
+                    0xE5484D,
+                    "인증 시도 횟수를 초과했습니다. 새 인증 세션을 시작해주세요.",
                 )
+                await interaction.response.edit_message(**self._edit_kwargs())
                 return
-            await interaction.response.edit_message(
-                embed=self.build_embed("INVALID CODE", 0xE5484D),
-                view=self,
+            self._render(
+                "INVALID CODE",
+                0xE5484D,
+                "입력한 코드가 일치하지 않습니다. 다시 입력해주세요.",
             )
+            await interaction.response.edit_message(**self._edit_kwargs())
             return
 
         settings = await self.cog.settings.get(interaction.guild.id)
         role_id = settings["roles"].get("verified")
         role = interaction.guild.get_role(role_id or 0)
         if role is None:
-            await interaction.response.edit_message(
-                embed=error_embed("인증 설정 오류", "`/역할설정`으로 인증 역할을 먼저 설정해주세요."),
-                view=None,
+            self.disable_controls()
+            self._render(
+                "CONFIGURATION ERROR",
+                0xE5484D,
+                "`/역할설정`으로 인증 역할을 먼저 설정해주세요.",
             )
+            await interaction.response.edit_message(**self._edit_kwargs())
             return
 
         try:
             await interaction.user.add_roles(role, reason="DevilBlox verification completed")
         except discord.Forbidden:
-            await interaction.response.edit_message(
-                embed=error_embed("권한 오류", "봇 역할이 인증 역할보다 낮거나 역할 관리 권한이 없습니다."),
-                view=None,
+            self.disable_controls()
+            self._render(
+                "PERMISSION ERROR",
+                0xE5484D,
+                "봇 역할이 인증 역할보다 낮거나 역할 관리 권한이 없습니다.",
             )
+            await interaction.response.edit_message(**self._edit_kwargs())
             return
 
         await self.cog.users.set_verified(interaction.guild.id, interaction.user.id, role.id)
         self.disable_controls()
         await self.cog.send_verify_log(interaction, role)
-        await interaction.response.edit_message(
-            embed=success_embed("인증 완료", f"{role.mention} 역할이 지급되었습니다."),
-            view=self,
+        self._render(
+            "VERIFIED",
+            0x2ECC71,
+            f"인증이 완료되어 {role.mention} 역할이 지급되었습니다.",
         )
+        await interaction.response.edit_message(**self._edit_kwargs())
 
     async def on_timeout(self):
         self.disable_controls()
         if self.message is None:
             return
+        self._render("EXPIRED", 0xE5484D, "인증 시간이 만료되었습니다. 다시 시작해주세요.")
         try:
-            await self.message.edit(embed=self.build_embed("EXPIRED", 0xE5484D), view=self)
+            await self.message.edit(**self._edit_kwargs())
         except discord.HTTPException:
             pass
 
 
-class VerifyStartView(discord.ui.View):
-    def __init__(self, cog: "VerificationCog"):
+class VerifyStartView(discord.ui.LayoutView):
+    def __init__(self, cog: "VerificationCog", *, include_media: bool = True):
         super().__init__(timeout=None)
         self.cog = cog
+        container = discord.ui.Container(accent_color=COLOR_DARK)
+        _add_brand_section(
+            container,
+            "## DEVILBLOX VERIFICATION\n서버 이용을 시작하려면 아래 버튼으로 인증을 완료해주세요.",
+        )
+        if include_media:
+            _add_gif_media(container, "verify_panel.gif", "DevilBlox verification panel")
+        container.add_item(discord.ui.Separator(spacing=discord.SeparatorSpacing.small))
+        start = discord.ui.Button(
+            label="START VERIFICATION",
+            style=discord.ButtonStyle.success,
+            custom_id="devilblox:verify:start",
+        )
+        start.callback = self.start
+        container.add_item(discord.ui.ActionRow(start))
+        self.add_item(container)
 
-    @discord.ui.button(
-        label="START VERIFICATION",
-        style=discord.ButtonStyle.success,
-        custom_id="devilblox:verify:start",
-    )
-    async def start(self, interaction: discord.Interaction, _: discord.ui.Button):
+    async def start(self, interaction: discord.Interaction):
         if interaction.guild is None:
             await interaction.response.send_message("서버 안에서만 사용할 수 있습니다.", ephemeral=True)
             return
@@ -205,14 +326,11 @@ class VerifyStartView(discord.ui.View):
         code = "".join(secrets.choice("0123456789") for _ in range(4))
         gif_name = choose_gif(VERIFY_GIFS)
         view = VerifyPad(self.cog, interaction.user.id, code, gif_name)
-        embed = view.build_embed()
         file = gif_file(gif_name)
 
         await interaction.response.defer(ephemeral=True)
         view.message = await interaction.followup.send(
-            embed=embed,
-            view=view,
-            file=file,
+            **_verify_send_kwargs(view, file),
             ephemeral=True,
             wait=True,
         )
@@ -241,16 +359,8 @@ class VerificationCog(commands.Cog):
     def users(self):
         return self.bot.repos.users
 
-    def build_verify_panel_embed(self, *, include_media: bool = True) -> discord.Embed:
-        embed = discord.Embed(
-            title="DEVILBLOX VERIFICATION",
-            description="서버 이용을 시작하려면 아래 버튼으로 인증을 완료해주세요.",
-            color=COLOR_DARK,
-        )
-        media_url = gif_media_url("verify_panel.gif") if include_media else None
-        if media_url:
-            embed.set_image(url=media_url)
-        return brand_embed(embed)
+    def build_verify_panel_view(self, *, include_media: bool = True) -> VerifyStartView:
+        return VerifyStartView(self, include_media=include_media)
 
     async def refresh_verify_panel(self, guild: discord.Guild):
         settings = await self.settings.get(guild.id)
@@ -277,8 +387,9 @@ class VerificationCog(commands.Cog):
                 or claim_local_gif_upload_slot()
             )
             update: dict = {
-                "embed": self.build_verify_panel_embed(include_media=include_media),
-                "view": VerifyStartView(self),
+                "content": None,
+                "embeds": [],
+                "view": self.build_verify_panel_view(include_media=include_media),
             }
             if status.effective_mode == "local":
                 if not gif_attachments and include_media:
@@ -339,10 +450,10 @@ class VerificationCog(commands.Cog):
     async def verify_panel(self, interaction: discord.Interaction):
         status = gif_delivery_status()
         include_media = status.effective_mode != "local" or claim_local_gif_upload_slot()
-        embed = self.build_verify_panel_embed(include_media=include_media)
         file = gif_file_from_folder("verify_panel.gif", "banners") if include_media else None
+        view = self.build_verify_panel_view(include_media=include_media)
 
-        message = await interaction.channel.send(embed=embed, file=file, view=VerifyStartView(self))
+        message = await interaction.channel.send(**_verify_send_kwargs(view, file))
         await save_panel_location(
             self.repos,
             interaction.guild.id,

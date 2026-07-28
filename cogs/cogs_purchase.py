@@ -8,7 +8,15 @@ import discord
 from discord import app_commands
 from discord.ext import commands, tasks
 
-from utils.embeds import BRAND_LOGO_URL, branded_files, error_embed, info_embed, success_embed
+from utils.embeds import (
+    BRAND_LOGO_FILENAME,
+    BRAND_LOGO_URL,
+    COLOR_INFO,
+    branded_files,
+    error_embed,
+    info_embed,
+    success_embed,
+)
 from utils.gifs import (
     PANEL_GIFS,
     SUCCESS_GIFS,
@@ -16,11 +24,14 @@ from utils.gifs import (
     TICKET_OPEN_GIFS,
     TICKET_STATE_GIFS,
     choose_gif,
+    gif_delivery_status,
     gif_file,
     gif_media_url,
+    message_media_urls,
     random_embed_gif_kwargs,
+    retained_non_gif_attachments,
 )
-from utils.panels import restore_panel_message, save_panel_location
+from utils.panels import save_panel_location
 from utils.permissions import allow_ticket_access, deny_ticket_access
 from utils.roles import has_role
 from utils.tickets import collect_channel_transcript, safe_channel_name
@@ -33,6 +44,63 @@ GRADE_THRESHOLDS = (
     (50_000, "vip"),
     (1, "customer"),
 )
+
+
+def _add_brand_section(container: discord.ui.Container, content: str):
+    container.add_item(
+        discord.ui.Section(
+            discord.ui.TextDisplay(content),
+            accessory=discord.ui.Thumbnail(
+                BRAND_LOGO_URL,
+                description="DevilBlox logo",
+            ),
+        )
+    )
+
+
+def _add_panel_gif(container: discord.ui.Container, gif_name: str | None):
+    media_url = gif_media_url(gif_name)
+    if media_url:
+        container.add_item(discord.ui.Separator())
+        container.add_item(
+            discord.ui.MediaGallery(
+                discord.MediaGalleryItem(media_url, description="DevilBlox purchase panel")
+            )
+        )
+
+
+def _panel_send_kwargs(view: discord.ui.LayoutView, gif_name: str | None) -> dict:
+    kwargs = {
+        "view": view,
+        "allowed_mentions": discord.AllowedMentions.none(),
+    }
+    files = branded_files(gif_file(gif_name))
+    if files:
+        kwargs["files"] = files
+    return kwargs
+
+
+def _panel_edit_kwargs(
+    message: discord.Message,
+    view: discord.ui.LayoutView,
+    gif_name: str | None,
+) -> dict:
+    retained = list(retained_non_gif_attachments(message))
+    if not any(item.filename == BRAND_LOGO_FILENAME for item in retained):
+        retained = [*branded_files(), *retained]
+    if gif_name and gif_delivery_status().effective_mode == "local":
+        existing = next(
+            (item for item in message.attachments if item.filename == gif_name),
+            None,
+        )
+        retained.append(existing or gif_file(gif_name))
+    return {
+        "content": None,
+        "embeds": [],
+        "view": view,
+        "attachments": [item for item in retained if item is not None],
+        "allowed_mentions": discord.AllowedMentions.none(),
+    }
 
 
 async def fetch_member(guild: discord.Guild, user_id: int) -> discord.Member | None:
@@ -114,25 +182,47 @@ class PurchaseSellerRatingSelect(discord.ui.Select):
         await self.cog.show_seller_rating(interaction, int(self.values[0]))
 
 
-class PurchaseSellerRatingView(discord.ui.View):
+class PurchaseSellerRatingView(discord.ui.LayoutView):
     def __init__(self, cog: "PurchaseCog", sellers: list[dict]):
         super().__init__(timeout=180)
-        self.add_item(PurchaseSellerRatingSelect(cog, sellers))
+        container = discord.ui.Container(accent_color=COLOR_INFO)
+        _add_brand_section(
+            container,
+            "## 셀러 평점\n평점을 확인할 셀러를 선택하세요.",
+        )
+        container.add_item(discord.ui.Separator(spacing=discord.SeparatorSpacing.small))
+        container.add_item(discord.ui.ActionRow(PurchaseSellerRatingSelect(cog, sellers)))
+        self.add_item(container)
 
 
-class PurchasePanelView(discord.ui.View):
-    def __init__(self, cog: "PurchaseCog", sellers: list[dict]):
+class PurchasePanelView(discord.ui.LayoutView):
+    def __init__(self, cog: "PurchaseCog", sellers: list[dict], gif_name: str | None = None):
         super().__init__(timeout=None)
         self.cog = cog
-        self.add_item(PurchaseSelect(cog, sellers))
+        container = discord.ui.Container(accent_color=COLOR_INFO)
+        _add_brand_section(
+            container,
+            "\n".join(
+                (
+                    "## PURCHASE",
+                    "원하는 셀러를 선택하면 개인 구매 티켓이 열립니다.",
+                    f"등록 셀러 `{len(sellers)}`명",
+                )
+            ),
+        )
+        _add_panel_gif(container, gif_name)
+        container.add_item(discord.ui.Separator(spacing=discord.SeparatorSpacing.small))
+        container.add_item(discord.ui.ActionRow(PurchaseSelect(cog, sellers)))
+        rating_button = discord.ui.Button(
+            label="셀러 평점",
+            style=discord.ButtonStyle.secondary,
+            custom_id="devilblox:purchase:rating",
+        )
+        rating_button.callback = self.seller_rating
+        container.add_item(discord.ui.ActionRow(rating_button))
+        self.add_item(container)
 
-    @discord.ui.button(
-        label="셀러 평점",
-        style=discord.ButtonStyle.secondary,
-        custom_id="devilblox:purchase:rating",
-        row=1,
-    )
-    async def seller_rating(self, interaction: discord.Interaction, _: discord.ui.Button):
+    async def seller_rating(self, interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True)
         if not interaction.guild:
             await interaction.followup.send(embed=error_embed("처리 실패", "서버 안에서만 사용할 수 있습니다."), ephemeral=True)
@@ -144,8 +234,7 @@ class PurchasePanelView(discord.ui.View):
             return
 
         await interaction.followup.send(
-            embed=info_embed("셀러 평점", "평점을 확인할 셀러를 선택하세요."),
-            view=PurchaseSellerRatingView(self.cog, sellers),
+            **_panel_send_kwargs(PurchaseSellerRatingView(self.cog, sellers), None),
             ephemeral=True,
         )
 
@@ -518,21 +607,28 @@ class PurchaseCog(commands.Cog):
                 return
 
             channel = guild.get_channel(channel_id)
-            if channel is None:
+            if channel is None or not hasattr(channel, "fetch_message"):
                 return
 
             sellers = await self.repos.sellers.list_active_options(guild.id)
-            embed = info_embed("PURCHASE", "원하는 셀러를 선택하면 개인 구매 티켓이 열립니다.")
-            await restore_panel_message(
-                self.repos,
-                guild,
-                "purchase",
-                "purchase_panel_message_id",
-                embed=embed,
-                view=PurchasePanelView(self, sellers),
-                image_attachment_filename=PANEL_GIFS,
-                rotate_image=rotate_image,
+            message = await channel.fetch_message(message_id)
+            gif_name = choose_gif(
+                PANEL_GIFS,
+                message.attachments,
+                force_new=rotate_image,
+                existing_urls=message_media_urls(message),
             )
+            view = PurchasePanelView(self, sellers, gif_name)
+            await message.edit(**_panel_edit_kwargs(message, view, gif_name))
+        except discord.NotFound:
+            await self.repos.settings.set_value(
+                guild.id,
+                "meta",
+                "purchase_panel_message_id",
+                None,
+            )
+        except discord.HTTPException:
+            return
         except Exception:
             log.exception("Failed to refresh purchase panel: guild_id=%s", guild.id)
 
@@ -569,8 +665,9 @@ class PurchaseCog(commands.Cog):
             )
             return
 
-        embed = info_embed("PURCHASE", "원하는 셀러를 선택하면 개인 구매 티켓이 열립니다.")
-        message = await interaction.channel.send(**random_embed_gif_kwargs(embed, PANEL_GIFS), view=PurchasePanelView(self, sellers))
+        gif_name = choose_gif(PANEL_GIFS)
+        view = PurchasePanelView(self, sellers, gif_name)
+        message = await interaction.channel.send(**_panel_send_kwargs(view, gif_name))
         await save_panel_location(
             self.repos,
             interaction.guild.id,

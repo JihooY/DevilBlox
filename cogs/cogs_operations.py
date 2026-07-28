@@ -18,11 +18,17 @@ from core.system_monitor import (
     NetworkMitigationController,
     SystemSnapshot,
 )
-from utils.embeds import brand_embed
+from utils.embeds import (
+    BRAND_LOGO_FILENAME,
+    BRAND_LOGO_URL,
+    brand_embed,
+    branded_files,
+)
 from utils.gifs import (
     begin_gif_recovery,
     end_gif_recovery,
     gif_delivery_status,
+    retained_non_gif_attachments,
     set_gif_suppressed,
 )
 from utils.panels import (
@@ -59,10 +65,97 @@ class CleanupSummary:
         )
 
 
-class OperationsPanelView(discord.ui.View):
-    def __init__(self, cog: "OperationsCog") -> None:
+def _operations_panel_text(embed: discord.Embed) -> str:
+    lines = [f"## {embed.title or 'DEVILBLOX SERVER CONTROL'}"]
+    if embed.description:
+        lines.append(str(embed.description))
+    for field in embed.fields:
+        lines.extend(("", f"### {field.name}", str(field.value)))
+    footer = getattr(embed.footer, "text", None)
+    if footer:
+        lines.extend(("", f"-# {footer}"))
+    return "\n".join(lines)
+
+
+def _operations_send_kwargs(view: discord.ui.LayoutView) -> dict:
+    kwargs = {"view": view}
+    files = branded_files()
+    if files:
+        kwargs["files"] = files
+    return kwargs
+
+
+def _operations_edit_kwargs(
+    message: discord.Message,
+    view: discord.ui.LayoutView,
+) -> dict:
+    attachments = list(retained_non_gif_attachments(message))
+    if not any(item.filename == BRAND_LOGO_FILENAME for item in attachments):
+        attachments = [*branded_files(), *attachments]
+    return {
+        "content": None,
+        "embeds": [],
+        "view": view,
+        "attachments": attachments,
+        "allowed_mentions": discord.AllowedMentions.none(),
+    }
+
+
+class OperationsPanelView(discord.ui.LayoutView):
+    def __init__(
+        self,
+        cog: "OperationsCog",
+        snapshot: SystemSnapshot | None = None,
+    ) -> None:
         super().__init__(timeout=None)
         self.cog = cog
+        embed = cog.build_panel_embed(snapshot)
+        color = getattr(getattr(embed, "colour", None), "value", None) or 0x5865F2
+        container = discord.ui.Container(accent_color=color)
+        container.add_item(
+            discord.ui.Section(
+                discord.ui.TextDisplay(_operations_panel_text(embed)),
+                accessory=discord.ui.Thumbnail(
+                    BRAND_LOGO_URL,
+                    description="DevilBlox logo",
+                ),
+            )
+        )
+        container.add_item(discord.ui.Separator(spacing=discord.SeparatorSpacing.small))
+
+        refresh = discord.ui.Button(
+            label="즉시 새로고침",
+            style=discord.ButtonStyle.secondary,
+            custom_id="devilblox:operations:refresh",
+        )
+        refresh.callback = self.refresh
+        force_mitigation = discord.ui.Button(
+            label="비상 절전 ON",
+            style=discord.ButtonStyle.danger,
+            custom_id="devilblox:operations:force-mitigation",
+        )
+        force_mitigation.callback = self.force_mitigation
+        automatic_mode = discord.ui.Button(
+            label="자동 모드",
+            style=discord.ButtonStyle.success,
+            custom_id="devilblox:operations:auto-mode",
+        )
+        automatic_mode.callback = self.automatic_mode
+        cleanup_gifs = discord.ui.Button(
+            label="GIF 즉시 정리",
+            style=discord.ButtonStyle.primary,
+            custom_id="devilblox:operations:cleanup-gifs",
+        )
+        cleanup_gifs.callback = self.cleanup_gifs
+        container.add_item(
+            discord.ui.ActionRow(
+                refresh,
+                force_mitigation,
+                automatic_mode,
+                cleanup_gifs,
+            )
+        )
+        self.add_item(container)
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         permissions = getattr(interaction.user, "guild_permissions", None)
@@ -96,24 +189,17 @@ class OperationsPanelView(discord.ui.View):
         except discord.HTTPException:
             pass
 
-    @discord.ui.button(
-        label="즉시 새로고침",
-        style=discord.ButtonStyle.secondary,
-        custom_id="devilblox:operations:refresh",
-    )
-    async def refresh(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
+    async def refresh(self, interaction: discord.Interaction) -> None:
         await interaction.response.defer(ephemeral=True, thinking=True)
         snapshot = await self.cog.collect_now(force=True)
         if interaction.message is not None:
-            await interaction.message.edit(embed=self.cog.build_panel_embed(snapshot), view=self)
+            view = self.cog.build_panel_view(snapshot)
+            await interaction.message.edit(
+                **_operations_edit_kwargs(interaction.message, view)
+            )
         await interaction.followup.send("최신 시스템 지표로 갱신했습니다.", ephemeral=True)
 
-    @discord.ui.button(
-        label="비상 절전 ON",
-        style=discord.ButtonStyle.danger,
-        custom_id="devilblox:operations:force-mitigation",
-    )
-    async def force_mitigation(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
+    async def force_mitigation(self, interaction: discord.Interaction) -> None:
         await interaction.response.defer(ephemeral=True, thinking=True)
         reason = f"administrator {interaction.user.id} enabled emergency mode"
         transition = self.cog.mitigation.force_enable(reason) or MitigationTransition(
@@ -126,12 +212,7 @@ class OperationsPanelView(discord.ui.View):
             ephemeral=True,
         )
 
-    @discord.ui.button(
-        label="자동 모드",
-        style=discord.ButtonStyle.success,
-        custom_id="devilblox:operations:auto-mode",
-    )
-    async def automatic_mode(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
+    async def automatic_mode(self, interaction: discord.Interaction) -> None:
         await interaction.response.defer(ephemeral=True, thinking=True)
         try:
             snapshot = await self.cog.collect_fresh_for_safety()
@@ -158,12 +239,7 @@ class OperationsPanelView(discord.ui.View):
             ephemeral=True,
         )
 
-    @discord.ui.button(
-        label="GIF 즉시 정리",
-        style=discord.ButtonStyle.primary,
-        custom_id="devilblox:operations:cleanup-gifs",
-    )
-    async def cleanup_gifs(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
+    async def cleanup_gifs(self, interaction: discord.Interaction) -> None:
         await interaction.response.defer(ephemeral=True, thinking=True)
         started = self.cog.start_manual_cleanup(
             f"administrator {interaction.user.id} requested GIF cleanup"
@@ -436,6 +512,8 @@ class OperationsCog(commands.Cog):
                     channel_key: str | None,
                     _: discord.Message,
                 ) -> discord.ui.LayoutView | None:
+                    if channel_key == "operations":
+                        return self.build_panel_view(self.latest_snapshot)
                     vending_cog = self.bot.get_cog("VendingArchiveCog")
                     if vending_cog is None or not hasattr(vending_cog, "build_tracked_panel_view"):
                         return None
@@ -565,14 +643,16 @@ class OperationsCog(commands.Cog):
         if message_id and saved_channel_id == channel.id:
             try:
                 message = await channel.fetch_message(message_id)
-                await message.edit(embed=self.build_panel_embed(self.latest_snapshot), view=self.panel_view)
+                view = self.build_panel_view(self.latest_snapshot)
+                await message.edit(**_operations_edit_kwargs(message, view))
                 return message
             except discord.NotFound:
                 pass
 
+        view = self.build_panel_view(self.latest_snapshot)
         message = await channel.send(
-            embed=self.build_panel_embed(self.latest_snapshot),
-            view=self.panel_view,
+            **_operations_send_kwargs(view),
+            allowed_mentions=discord.AllowedMentions.none(),
         )
         await save_panel_location(
             self.bot.repos,
@@ -588,17 +668,17 @@ class OperationsCog(commands.Cog):
         if self.latest_snapshot is None or self.bot.repos is None:
             return
         async with self._panel_lock:
-            embed = self.build_panel_embed(self.latest_snapshot)
             for guild in self.bot.guilds:
                 try:
                     settings = await self.bot.repos.settings.get(guild.id)
                     channel_id = settings["channels"].get("operations")
                     message_id = settings["meta"].get("operations_panel_message_id")
                     channel = guild.get_channel(channel_id or 0)
-                    if channel is None or not message_id or not hasattr(channel, "get_partial_message"):
+                    if channel is None or not message_id or not hasattr(channel, "fetch_message"):
                         continue
-                    message = channel.get_partial_message(message_id)
-                    await message.edit(embed=embed, view=self.panel_view)
+                    message = await channel.fetch_message(message_id)
+                    view = self.build_panel_view(self.latest_snapshot)
+                    await message.edit(**_operations_edit_kwargs(message, view))
                 except discord.NotFound:
                     await self.bot.repos.settings.set_value(
                         guild.id,
@@ -608,6 +688,12 @@ class OperationsCog(commands.Cog):
                     )
                 except discord.HTTPException:
                     continue
+
+    def build_panel_view(
+        self,
+        snapshot: SystemSnapshot | None,
+    ) -> OperationsPanelView:
+        return OperationsPanelView(self, snapshot)
 
     def build_panel_embed(self, snapshot: SystemSnapshot | None) -> discord.Embed:
         media = gif_delivery_status()

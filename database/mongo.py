@@ -4,7 +4,7 @@ import logging
 from dataclasses import dataclass
 from urllib.parse import quote_plus
 
-import motor.motor_asyncio
+from pymongo import AsyncMongoClient
 
 log = logging.getLogger(__name__)
 
@@ -28,7 +28,7 @@ class MongoConfig:
 class MongoRuntime:
     def __init__(self, config: MongoConfig):
         self.config = config
-        self.client: motor.motor_asyncio.AsyncIOMotorClient | None = None
+        self.client: AsyncMongoClient | None = None
         self.tunnel = None
 
     def _build_uri(self, host: str, port: int) -> str:
@@ -67,7 +67,7 @@ class MongoRuntime:
                 host, port = self._start_tunnel()
             uri = self._build_uri(host, port)
 
-        self.client = motor.motor_asyncio.AsyncIOMotorClient(
+        self.client = AsyncMongoClient(
             uri,
             serverSelectionTimeoutMS=8000,
             uuidRepresentation="standard",
@@ -81,10 +81,12 @@ class MongoRuntime:
         return self.client[self.config.db_name]
 
     async def close(self):
-        if self.client is not None:
-            self.client.close()
+        try:
+            if self.client is not None:
+                await self.client.close()
+        finally:
             self.client = None
-        if self.tunnel is not None:
-            self.tunnel.stop()
-            self.tunnel = None
-            log.info("MongoDB SSH tunnel closed")
+            if self.tunnel is not None:
+                self.tunnel.stop()
+                self.tunnel = None
+                log.info("MongoDB SSH tunnel closed")

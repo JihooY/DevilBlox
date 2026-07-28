@@ -147,6 +147,7 @@ class SellerStore:
                     "_id": keyed(guild_id, user_id),
                     "accrued_sell_money": 0,
                     "accrued_sell_count": 0,
+                    "sale_operation_ids": [],
                     "current_ticket_channel_ids": [],
                     "current_ticket_count": 0,
                     "ticket_disabled": False,
@@ -237,6 +238,9 @@ class SellerStore:
             )
 
     async def add_sale(self, guild_id: int, user_id: int, amount: int):
+        amount = int(amount)
+        if amount < 0:
+            raise ValueError("sale amount must be zero or greater")
         await self.collection.update_one(
             {"_id": keyed(guild_id, user_id)},
             {
@@ -244,6 +248,39 @@ class SellerStore:
                 "$set": {"updated_at": _now()},
             },
         )
+
+    async def add_sale_once(
+        self,
+        guild_id: int,
+        user_id: int,
+        amount: int,
+        *,
+        operation_id: str,
+    ) -> bool:
+        amount = int(amount)
+        operation_id = str(operation_id).strip()
+        if amount < 0:
+            raise ValueError("sale amount must be zero or greater")
+        if not operation_id:
+            raise ValueError("operation_id is required")
+
+        if await self.get(guild_id, user_id) is None:
+            await self.upsert(guild_id, user_id, str(user_id))
+        result = await self.collection.update_one(
+            {
+                "_id": keyed(guild_id, user_id),
+                "sale_operation_ids": {"$ne": operation_id},
+            },
+            {
+                "$inc": {"accrued_sell_money": amount, "accrued_sell_count": 1},
+                "$addToSet": {"sale_operation_ids": operation_id},
+                "$set": {"updated_at": _now()},
+            },
+        )
+        if result.modified_count:
+            return True
+        seller = await self.get(guild_id, user_id)
+        return bool(seller and operation_id in seller.get("sale_operation_ids", []))
 
     async def import_legacy_seller(self, guild_id: int, doc: dict):
         user_id = int(doc["user_id"])

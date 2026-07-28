@@ -146,6 +146,9 @@ class CouponStore:
         )
 
     async def quote(self, guild_id: int, user_id: int, context: str, amount: int):
+        amount = int(amount)
+        if amount < 0:
+            raise ValueError("coupon amount must be zero or greater")
         selection = await self.get_selection(guild_id, user_id, context)
         if not selection:
             return amount, None, None
@@ -166,6 +169,9 @@ class CouponStore:
         return await self.selections.find_one({"guild_id": guild_id, "user_id": user_id, "context": context})
 
     async def consume(self, guild_id: int, user_id: int, code: str, context: str, amount: int):
+        amount = int(amount)
+        if amount < 0:
+            raise ValueError("coupon amount must be zero or greater")
         code = normalize_code(code)
         coupon = await self.coupons.find_one({"guild_id": guild_id, "code": code, "active": True})
         if coupon is None:
@@ -188,6 +194,114 @@ class CouponStore:
                                            "discounted_amount": discounted, "created_at": _now()})
         return coupon, discounted
 
+    async def consume_once(
+        self,
+        guild_id: int,
+        user_id: int,
+        code: str,
+        context: str,
+        amount: int,
+        *,
+        operation_id: str,
+    ):
+        """Consume one coupon once for a retryable purchase operation."""
+        amount = int(amount)
+        operation_id = str(operation_id).strip()
+        if amount < 0:
+            raise ValueError("coupon amount must be zero or greater")
+        if not operation_id:
+            raise ValueError("operation_id is required")
+
+        code = normalize_code(code)
+        coupon = await self.coupons.find_one(
+            {"guild_id": guild_id, "code": code, "active": True}
+        )
+        if coupon is None:
+            return None
+
+        ownership_query = {"guild_id": guild_id, "user_id": user_id, "code": code}
+        owned = await self.user_coupons.find_one_and_update(
+            {
+                **ownership_query,
+                "quantity": {"$gt": 0},
+                "consumption_operation_ids": {"$ne": operation_id},
+            },
+            {
+                "$inc": {"quantity": -1},
+                "$addToSet": {"consumption_operation_ids": operation_id},
+                "$set": {"updated_at": _now()},
+            },
+            return_document=ReturnDocument.AFTER,
+        )
+        if owned is None:
+            owned = await self.user_coupons.find_one(ownership_query)
+            consumed = bool(
+                owned
+                and operation_id in owned.get("consumption_operation_ids", [])
+                and operation_id not in owned.get("restored_operation_ids", [])
+            )
+            if not consumed:
+                return None
+
+        discounted = _discounted_amount(coupon, amount)
+        now = _now()
+        await self.redemptions.update_one(
+            {"_id": operation_id},
+            {
+                "$setOnInsert": {
+                    "_id": operation_id,
+                    "guild_id": guild_id,
+                    "user_id": user_id,
+                    "code": code,
+                    "kind": coupon["kind"],
+                    "context": context,
+                    "amount": amount,
+                    "discounted_amount": discounted,
+                    "created_at": now,
+                },
+                "$set": {"restored_at": None, "updated_at": now},
+            },
+            upsert=True,
+        )
+        return coupon, discounted
+
+    async def restore_consumption_once(
+        self,
+        guild_id: int,
+        user_id: int,
+        code: str,
+        *,
+        operation_id: str,
+    ) -> bool:
+        """Compensate an idempotent coupon consumption at most once."""
+        code = normalize_code(code)
+        operation_id = str(operation_id).strip()
+        if not operation_id:
+            raise ValueError("operation_id is required")
+
+        query = {"guild_id": guild_id, "user_id": user_id, "code": code}
+        result = await self.user_coupons.update_one(
+            {
+                **query,
+                "consumption_operation_ids": operation_id,
+                "restored_operation_ids": {"$ne": operation_id},
+            },
+            {
+                "$inc": {"quantity": 1},
+                "$addToSet": {"restored_operation_ids": operation_id},
+                "$set": {"updated_at": _now()},
+            },
+        )
+        owned = await self.user_coupons.find_one(query)
+        restored = bool(owned and operation_id in owned.get("restored_operation_ids", []))
+        if result.modified_count or restored:
+            await self.redemptions.update_one(
+                {"_id": operation_id},
+                {"$set": {"restored_at": _now(), "updated_at": _now()}},
+            )
+            return True
+        return False
+
     async def attribute_invite(self, guild_id: int, user_id: int, invite_code: str, inviter_id: int | None):
         await self.invites.update_one(
             {"guild_id": guild_id, "user_id": user_id},
@@ -208,3 +322,10 @@ class CouponStore:
         if code:
             await self.create_coupon(guild_id, code, doc.get("name", code), "general",
                                      int(doc.get("degree", 0) or 1), 0)
+
+
+def _discounted_amount(coupon: dict, amount: int) -> int:
+    value = int(coupon["discount"])
+    if coupon.get("discount_type", "percent") == "fixed":
+        return max(0, amount - value)
+    return max(0, amount - (amount * value // 100))

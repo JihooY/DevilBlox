@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from uuid import uuid4
 
 from pymongo.errors import DuplicateKeyError
 from pymongo import ReturnDocument
@@ -119,6 +120,9 @@ class ProductStore:
         created_by: int | None = None,
     ):
         now = _now()
+        price = int(price)
+        if price < 0:
+            raise ValueError("product price must be zero or greater")
         product_id = product_id.strip()
         product_id_lower = normalize_product_id(product_id)
         category_id = category_id.strip()
@@ -130,7 +134,7 @@ class ProductStore:
             "category_id": category_id,
             "category_id_lower": category_id_lower,
             "title": title.strip() or product_id,
-            "price": int(price),
+            "price": price,
             "terabox_url": terabox_url.strip(),
             "description": description.strip(),
             "seller_id": seller_id,
@@ -267,11 +271,14 @@ class VendingLogStore:
         proof_content_type: str = "",
         proof_size: int = 0,
     ):
+        amount = int(amount)
+        if amount <= 0:
+            raise ValueError("charge amount must be greater than zero")
         doc = {
             "guild_id": guild_id,
             "user_id": user_id,
             "depositor_name": depositor_name.strip(),
-            "amount": int(amount),
+            "amount": amount,
             "proof_filename": proof_filename,
             "proof_content_type": proof_content_type,
             "proof_size": int(proof_size or 0),
@@ -328,7 +335,7 @@ class VendingLogStore:
         return await self.charge_logs.find_one({"guild_id": guild_id, "admin_message_id": message_id})
 
     async def claim_charge_request(self, guild_id: int, message_id: int, admin_id: int):
-        return await self.charge_logs.find_one_and_update(
+        charge = await self.charge_logs.find_one_and_update(
             {"guild_id": guild_id, "admin_message_id": message_id, "status": "pending"},
             {
                 "$set": {
@@ -338,6 +345,18 @@ class VendingLogStore:
                 }
             },
             return_document=ReturnDocument.AFTER,
+        )
+        if charge is not None:
+            return charge
+
+        # A process can stop after claiming but before credit/finalization.  A
+        # later click must be able to resume that exact request safely.
+        return await self.charge_logs.find_one(
+            {
+                "guild_id": guild_id,
+                "admin_message_id": message_id,
+                "status": "processing",
+            }
         )
 
     async def approve_charge_request(self, request_id, admin_id: int):
@@ -355,6 +374,9 @@ class VendingLogStore:
             return_document=ReturnDocument.AFTER,
         )
 
+    async def get_charge(self, request_id):
+        return await self.charge_logs.find_one({"_id": request_id})
+
     async def reject_charge_request(self, guild_id: int, message_id: int, admin_id: int, reason: str):
         return await self.charge_logs.find_one_and_update(
             {"guild_id": guild_id, "admin_message_id": message_id, "status": "pending"},
@@ -371,33 +393,73 @@ class VendingLogStore:
             return_document=ReturnDocument.AFTER,
         )
 
-    async def record_purchase(
+    async def upsert_purchase_log(
         self,
         *,
+        operation_id: str,
         guild_id: int,
         user_id: int,
         product: dict,
+        price: int,
+        original_price: int,
         before_cash: int,
         after_cash: int,
+        discount_code: str | None = None,
     ):
+        price = int(price)
+        original_price = int(original_price)
+        if price < 0 or original_price < 0:
+            raise ValueError("purchase prices must be zero or greater")
+        operation_id = str(operation_id).strip()
+        if not operation_id:
+            raise ValueError("operation_id is required")
+
         now = _now()
         product_id = product["product_id"]
         product_id_lower = product["product_id_lower"]
         log_doc = {
+            "_id": operation_id,
+            "operation_id": operation_id,
             "guild_id": guild_id,
             "user_id": user_id,
             "product_id": product_id,
             "product_id_lower": product_id_lower,
             "title": product.get("title", product_id),
-            "price": int(product.get("price", 0)),
+            "price": price,
+            "original_price": original_price,
             "before_cash": int(before_cash),
             "after_cash": int(after_cash),
             "seller_id": product.get("seller_id"),
             "purchased_at": now,
         }
-        await self.purchase_logs.insert_one(log_doc)
-        await self.user_products.update_one(
-            {"guild_id": guild_id, "user_id": user_id, "product_id_lower": product_id_lower},
+        if discount_code:
+            log_doc["discount_code"] = str(discount_code)
+        await self.purchase_logs.update_one(
+            {"_id": operation_id},
+            {"$setOnInsert": log_doc},
+            upsert=True,
+        )
+        return await self.purchase_logs.find_one({"_id": operation_id})
+
+    async def complete_product_purchase(
+        self,
+        *,
+        operation_id: str,
+        guild_id: int,
+        user_id: int,
+        product: dict,
+    ) -> tuple[dict, bool]:
+        now = _now()
+        product_id = product["product_id"]
+        product_id_lower = product["product_id_lower"]
+        entitlement = await self.user_products.find_one_and_update(
+            {
+                "guild_id": guild_id,
+                "user_id": user_id,
+                "product_id_lower": product_id_lower,
+                "operation_id": operation_id,
+                "status": "pending",
+            },
             {
                 "$set": {
                     "product_id": product_id,
@@ -407,44 +469,102 @@ class VendingLogStore:
                     "purchased_at": now,
                     "updated_at": now,
                 },
-                "$setOnInsert": {
-                    "guild_id": guild_id,
-                    "user_id": user_id,
-                    "product_id_lower": product_id_lower,
-                },
             },
-            upsert=True,
+            return_document=ReturnDocument.AFTER,
         )
-        return log_doc
+        if entitlement is not None:
+            return entitlement, True
 
-    async def reserve_product(self, guild_id: int, user_id: int, product: dict) -> bool:
-        now = _now()
-        try:
-            await self.user_products.insert_one(
-                {
-                    "guild_id": guild_id,
-                    "user_id": user_id,
-                    "product_id": product["product_id"],
-                    "product_id_lower": product["product_id_lower"],
-                    "title": product.get("title", product["product_id"]),
-                    "terabox_url": product.get("terabox_url", ""),
-                    "status": "pending",
-                    "reserved_at": now,
-                    "updated_at": now,
-                }
-            )
-        except DuplicateKeyError:
-            return False
-        return True
-
-    async def release_product_reservation(self, guild_id: int, user_id: int, product_id: str):
-        await self.user_products.delete_one(
+        entitlement = await self.user_products.find_one(
             {
                 "guild_id": guild_id,
                 "user_id": user_id,
-                "product_id_lower": normalize_product_id(product_id),
-                "status": "pending",
+                "product_id_lower": product_id_lower,
             }
+        )
+        if entitlement and entitlement.get("status") == "purchased":
+            return entitlement, False
+        raise RuntimeError("purchase entitlement could not be completed")
+
+    async def reserve_product(
+        self,
+        guild_id: int,
+        user_id: int,
+        product: dict,
+        *,
+        original_price: int | None = None,
+        quoted_price: int | None = None,
+        coupon_code: str | None = None,
+        promotion_code: str | None = None,
+    ) -> dict:
+        now = _now()
+        original_price = int(
+            product.get("price", 0) if original_price is None else original_price
+        )
+        quoted_price = int(original_price if quoted_price is None else quoted_price)
+        if original_price < 0 or quoted_price < 0:
+            raise ValueError("purchase prices must be zero or greater")
+
+        operation_id = f"purchase:{uuid4().hex}"
+        reservation = {
+            "guild_id": guild_id,
+            "user_id": user_id,
+            "product_id": product["product_id"],
+            "product_id_lower": product["product_id_lower"],
+            "title": product.get("title", product["product_id"]),
+            "terabox_url": product.get("terabox_url", ""),
+            "status": "pending",
+            "operation_id": operation_id,
+            "original_price": original_price,
+            "quoted_price": quoted_price,
+            "coupon_code": coupon_code,
+            "promotion_code": promotion_code,
+            "reserved_at": now,
+            "updated_at": now,
+        }
+        try:
+            await self.user_products.insert_one(reservation)
+        except DuplicateKeyError:
+            existing = await self.user_products.find_one(
+                {
+                    "guild_id": guild_id,
+                    "user_id": user_id,
+                    "product_id_lower": product["product_id_lower"],
+                }
+            )
+            if existing is None:
+                raise
+            return existing
+        return reservation
+
+    async def update_purchase_progress(self, operation_id: str, **updates) -> dict | None:
+        if not updates:
+            return await self.user_products.find_one({"operation_id": operation_id})
+        updates["updated_at"] = _now()
+        return await self.user_products.find_one_and_update(
+            {"operation_id": operation_id, "status": "pending"},
+            {"$set": updates},
+            return_document=ReturnDocument.AFTER,
+        )
+
+    async def release_product_reservation(
+        self,
+        guild_id: int,
+        user_id: int,
+        product_id: str,
+        *,
+        operation_id: str | None = None,
+    ):
+        query = {
+            "guild_id": guild_id,
+            "user_id": user_id,
+            "product_id_lower": normalize_product_id(product_id),
+            "status": "pending",
+        }
+        if operation_id is not None:
+            query["operation_id"] = operation_id
+        await self.user_products.delete_one(
+            query
         )
 
     async def owns_product(self, guild_id: int, user_id: int, product_id: str) -> bool:

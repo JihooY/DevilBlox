@@ -6,25 +6,98 @@ import discord
 from discord import app_commands
 from discord.ext import commands, tasks
 
-from utils.embeds import error_embed, info_embed, success_embed
-from utils.gifs import PANEL_GIFS, TICKET_CLOSE_GIFS, TICKET_OPEN_GIFS, random_embed_gif_kwargs
-from utils.panels import restore_panel_message, save_panel_location
+from utils.embeds import (
+    BRAND_LOGO_FILENAME,
+    BRAND_LOGO_URL,
+    COLOR_INFO,
+    branded_files,
+    error_embed,
+    info_embed,
+    success_embed,
+)
+from utils.gifs import (
+    PANEL_GIFS,
+    TICKET_CLOSE_GIFS,
+    TICKET_OPEN_GIFS,
+    choose_gif,
+    gif_delivery_status,
+    gif_file,
+    gif_media_url,
+    message_media_urls,
+    random_embed_gif_kwargs,
+    retained_non_gif_attachments,
+)
+from utils.panels import save_panel_location
 from utils.permissions import allow_ticket_access, deny_ticket_access
 from utils.roles import has_role
 from utils.tickets import safe_channel_name
 
 
-class SupportView(discord.ui.View):
-    def __init__(self, cog: "SupportCog"):
+def _panel_send_kwargs(view: discord.ui.LayoutView, gif_name: str | None) -> dict:
+    kwargs = {"view": view}
+    files = branded_files(gif_file(gif_name))
+    if files:
+        kwargs["files"] = files
+    return kwargs
+
+
+def _panel_edit_kwargs(
+    message: discord.Message,
+    view: discord.ui.LayoutView,
+    gif_name: str | None,
+) -> dict:
+    retained = list(retained_non_gif_attachments(message))
+    if not any(item.filename == BRAND_LOGO_FILENAME for item in retained):
+        retained = [*branded_files(), *retained]
+    if gif_name and gif_delivery_status().effective_mode == "local":
+        existing = next(
+            (item for item in message.attachments if item.filename == gif_name),
+            None,
+        )
+        retained.append(existing or gif_file(gif_name))
+    return {
+        "content": None,
+        "embeds": [],
+        "view": view,
+        "attachments": [item for item in retained if item is not None],
+    }
+
+
+class SupportView(discord.ui.LayoutView):
+    def __init__(self, cog: "SupportCog", gif_name: str | None = None):
         super().__init__(timeout=None)
         self.cog = cog
+        container = discord.ui.Container(accent_color=COLOR_INFO)
+        container.add_item(
+            discord.ui.Section(
+                discord.ui.TextDisplay(
+                    "## SUPPORT\n문의를 시작하려면 아래 버튼을 눌러주세요."
+                ),
+                accessory=discord.ui.Thumbnail(
+                    BRAND_LOGO_URL,
+                    description="DevilBlox logo",
+                ),
+            )
+        )
+        media_url = gif_media_url(gif_name)
+        if media_url:
+            container.add_item(discord.ui.Separator())
+            container.add_item(
+                discord.ui.MediaGallery(
+                    discord.MediaGalleryItem(media_url, description="DevilBlox support panel")
+                )
+            )
+        container.add_item(discord.ui.Separator(spacing=discord.SeparatorSpacing.small))
+        open_button = discord.ui.Button(
+            label="문의하기",
+            style=discord.ButtonStyle.success,
+            custom_id="devilblox:support:open",
+        )
+        open_button.callback = self.open_support
+        container.add_item(discord.ui.ActionRow(open_button))
+        self.add_item(container)
 
-    @discord.ui.button(
-        label="문의하기",
-        style=discord.ButtonStyle.success,
-        custom_id="devilblox:support:open",
-    )
-    async def open_support(self, interaction: discord.Interaction, _: discord.ui.Button):
+    async def open_support(self, interaction: discord.Interaction):
         await self.cog.open_support_ticket(interaction)
 
 
@@ -44,16 +117,33 @@ class SupportCog(commands.Cog):
         return self.bot.repos
 
     async def refresh_support_panel(self, guild: discord.Guild, *, rotate_image: bool = False):
-        await restore_panel_message(
-            self.repos,
-            guild,
-            "support",
-            "support_panel_message_id",
-            embed=info_embed("SUPPORT", "문의를 시작하려면 아래 버튼을 눌러주세요."),
-            view=SupportView(self),
-            image_attachment_filename=PANEL_GIFS,
-            rotate_image=rotate_image,
-        )
+        settings = await self.repos.settings.get(guild.id)
+        channel_id = settings["channels"].get("support")
+        message_id = settings["meta"].get("support_panel_message_id")
+        if not channel_id or not message_id:
+            return
+        channel = guild.get_channel(channel_id)
+        if channel is None or not hasattr(channel, "fetch_message"):
+            return
+        try:
+            message = await channel.fetch_message(message_id)
+            gif_name = choose_gif(
+                PANEL_GIFS,
+                message.attachments,
+                force_new=rotate_image,
+                existing_urls=message_media_urls(message),
+            )
+            view = SupportView(self, gif_name)
+            await message.edit(**_panel_edit_kwargs(message, view, gif_name))
+        except discord.NotFound:
+            await self.repos.settings.set_value(
+                guild.id,
+                "meta",
+                "support_panel_message_id",
+                None,
+            )
+        except discord.HTTPException:
+            return
 
     @tasks.loop(minutes=1)
     async def restore_support_panel_loop(self):
@@ -163,10 +253,10 @@ class SupportCog(commands.Cog):
     @app_commands.command(name="문의패널", description="현재 채널에 문의 패널을 생성합니다.")
     @app_commands.default_permissions(administrator=True)
     async def support_panel(self, interaction: discord.Interaction):
-        embed = info_embed("SUPPORT", "문의를 시작하려면 아래 버튼을 눌러주세요.")
+        gif_name = choose_gif(PANEL_GIFS)
+        view = SupportView(self, gif_name)
         message = await interaction.channel.send(
-            **random_embed_gif_kwargs(embed, PANEL_GIFS),
-            view=SupportView(self),
+            **_panel_send_kwargs(view, gif_name),
         )
         await save_panel_location(
             self.repos,

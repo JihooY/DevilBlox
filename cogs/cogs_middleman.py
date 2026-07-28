@@ -6,12 +6,89 @@ import discord
 from discord import app_commands
 from discord.ext import commands, tasks
 
-from utils.embeds import error_embed, info_embed, success_embed
-from utils.gifs import PANEL_GIFS, TICKET_CLOSE_GIFS, TICKET_OPEN_GIFS, random_embed_gif_kwargs
-from utils.panels import restore_panel_message, save_panel_location
+from utils.embeds import (
+    BRAND_LOGO_FILENAME,
+    BRAND_LOGO_URL,
+    COLOR_INFO,
+    COLOR_SUCCESS,
+    branded_files,
+    error_embed,
+    info_embed,
+    success_embed,
+)
+from utils.gifs import (
+    PANEL_GIFS,
+    TICKET_CLOSE_GIFS,
+    TICKET_OPEN_GIFS,
+    choose_gif,
+    gif_delivery_status,
+    gif_file,
+    gif_media_url,
+    message_media_urls,
+    random_embed_gif_kwargs,
+    retained_non_gif_attachments,
+)
+from utils.panels import save_panel_location
 from utils.permissions import deny_ticket_access, move_to_category
 from utils.roles import has_role
 from utils.tickets import collect_channel_transcript, safe_channel_name
+
+
+def _add_brand_section(container: discord.ui.Container, content: str):
+    container.add_item(
+        discord.ui.Section(
+            discord.ui.TextDisplay(content),
+            accessory=discord.ui.Thumbnail(
+                BRAND_LOGO_URL,
+                description="DevilBlox logo",
+            ),
+        )
+    )
+
+
+def _add_panel_gif(container: discord.ui.Container, gif_name: str | None):
+    media_url = gif_media_url(gif_name)
+    if media_url:
+        container.add_item(discord.ui.Separator())
+        container.add_item(
+            discord.ui.MediaGallery(
+                discord.MediaGalleryItem(media_url, description="DevilBlox middleman panel")
+            )
+        )
+
+
+def _panel_send_kwargs(view: discord.ui.LayoutView, gif_name: str | None) -> dict:
+    kwargs = {
+        "view": view,
+        "allowed_mentions": discord.AllowedMentions.none(),
+    }
+    files = branded_files(gif_file(gif_name))
+    if files:
+        kwargs["files"] = files
+    return kwargs
+
+
+def _panel_edit_kwargs(
+    message: discord.Message,
+    view: discord.ui.LayoutView,
+    gif_name: str | None,
+) -> dict:
+    retained = list(retained_non_gif_attachments(message))
+    if not any(item.filename == BRAND_LOGO_FILENAME for item in retained):
+        retained = [*branded_files(), *retained]
+    if gif_name and gif_delivery_status().effective_mode == "local":
+        existing = next(
+            (item for item in message.attachments if item.filename == gif_name),
+            None,
+        )
+        retained.append(existing or gif_file(gif_name))
+    return {
+        "content": None,
+        "embeds": [],
+        "view": view,
+        "attachments": [item for item in retained if item is not None],
+        "allowed_mentions": discord.AllowedMentions.none(),
+    }
 
 
 async def fetch_member(guild: discord.Guild, user_id: int) -> discord.Member | None:
@@ -46,10 +123,17 @@ class MiddlemanInfoSelect(discord.ui.Select):
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
 
-class MiddlemanInfoView(discord.ui.View):
+class MiddlemanInfoView(discord.ui.LayoutView):
     def __init__(self, cog: "MiddlemanCog", middlemen: list[dict]):
         super().__init__(timeout=180)
-        self.add_item(MiddlemanInfoSelect(cog, middlemen))
+        container = discord.ui.Container(accent_color=COLOR_INFO)
+        _add_brand_section(
+            container,
+            "## MIDDLEMAN INFO\n확인할 중개자를 선택하세요.",
+        )
+        container.add_item(discord.ui.Separator(spacing=discord.SeparatorSpacing.small))
+        container.add_item(discord.ui.ActionRow(MiddlemanInfoSelect(cog, middlemen)))
+        self.add_item(container)
 
 
 class MiddlemanRequestModal(discord.ui.Modal, title="중개 정보 입력"):
@@ -81,42 +165,71 @@ class MiddlemanRequestModal(discord.ui.Modal, title="중개 정보 입력"):
             await interaction.followup.send(embed=error_embed("유저 오류", "상대방 또는 중개자를 서버에서 찾을 수 없습니다."), ephemeral=True)
             return
 
-        self.draft_view.counterparty_id = counterparty_id
-        self.draft_view.middleman_id = middleman_id
-        self.draft_view.open_button.disabled = False
-
-        embed = self.draft_view.build_embed(interaction.user, counterparty, middleman)
-        await self.draft_view.message.edit(embed=embed, view=self.draft_view)
+        self.draft_view.set_participants(counterparty, middleman)
+        if self.draft_view.message is not None:
+            await self.draft_view.message.edit(
+                **_panel_edit_kwargs(self.draft_view.message, self.draft_view, None)
+            )
         await interaction.followup.send(embed=success_embed("중개 정보 입력 완료"), ephemeral=True)
 
 
-class MiddlemanDraftView(discord.ui.View):
+class MiddlemanDraftView(discord.ui.LayoutView):
     def __init__(self, cog: "MiddlemanCog", requester: discord.Member):
         super().__init__(timeout=300)
         self.cog = cog
+        self.requester = requester
         self.requester_id = requester.id
         self.counterparty_id: int | None = None
         self.middleman_id: int | None = None
         self.message: discord.WebhookMessage | None = None
 
+        self.summary = discord.ui.TextDisplay(self.build_content())
+        container = discord.ui.Container(accent_color=COLOR_INFO)
+        container.add_item(
+            discord.ui.Section(
+                self.summary,
+                accessory=discord.ui.Thumbnail(
+                    BRAND_LOGO_URL,
+                    description="DevilBlox logo",
+                ),
+            )
+        )
+        container.add_item(discord.ui.Separator(spacing=discord.SeparatorSpacing.small))
+
+        details_button = discord.ui.Button(label="세부정보 입력", style=discord.ButtonStyle.secondary)
+        details_button.callback = self.details
         self.open_button = discord.ui.Button(label="중개 티켓 열기", style=discord.ButtonStyle.success, disabled=True)
         self.open_button.callback = self.open_ticket
-        self.add_item(self.open_button)
+        container.add_item(discord.ui.ActionRow(details_button, self.open_button))
+        self.add_item(container)
 
-    def build_embed(
+    def build_content(
         self,
-        requester: discord.Member,
         counterparty: discord.Member | None = None,
         middleman: discord.Member | None = None,
-    ) -> discord.Embed:
-        embed = info_embed("MIDDLEMAN SERVICE START", "세부정보 입력 후 티켓을 열 수 있습니다.")
-        embed.add_field(name="본인", value=f"{requester.mention} (`{requester.id}`)", inline=False)
-        embed.add_field(name="상대방", value=f"{counterparty.mention} (`{counterparty.id}`)" if counterparty else "미입력", inline=False)
-        embed.add_field(name="중개자", value=f"{middleman.mention} (`{middleman.id}`)" if middleman else "미입력", inline=False)
-        return embed
+    ) -> str:
+        counterparty_text = (
+            f"{counterparty.mention} (`{counterparty.id}`)" if counterparty else "미입력"
+        )
+        middleman_text = f"{middleman.mention} (`{middleman.id}`)" if middleman else "미입력"
+        return "\n".join(
+            (
+                "## MIDDLEMAN SERVICE START",
+                "세부정보 입력 후 티켓을 열 수 있습니다.",
+                "",
+                f"**본인**  {self.requester.mention} (`{self.requester.id}`)",
+                f"**상대방**  {counterparty_text}",
+                f"**중개자**  {middleman_text}",
+            )
+        )
 
-    @discord.ui.button(label="세부정보 입력", style=discord.ButtonStyle.secondary)
-    async def details(self, interaction: discord.Interaction, _: discord.ui.Button):
+    def set_participants(self, counterparty: discord.Member, middleman: discord.Member):
+        self.counterparty_id = counterparty.id
+        self.middleman_id = middleman.id
+        self.open_button.disabled = False
+        self.summary.content = self.build_content(counterparty, middleman)
+
+    async def details(self, interaction: discord.Interaction):
         if interaction.user.id != self.requester_id:
             await interaction.response.send_message("신청자만 수정할 수 있습니다.", ephemeral=True)
             return
@@ -133,27 +246,60 @@ class MiddlemanDraftView(discord.ui.View):
         await self.cog.open_middleman_ticket(interaction, self.counterparty_id, self.middleman_id, self)
 
 
-class MiddlemanPanelView(discord.ui.View):
-    def __init__(self, cog: "MiddlemanCog"):
+class MiddlemanDraftCompleteView(discord.ui.LayoutView):
+    def __init__(self, channel_mention: str):
+        super().__init__(timeout=None)
+        container = discord.ui.Container(accent_color=COLOR_SUCCESS)
+        _add_brand_section(
+            container,
+            f"## 중개 티켓 생성 완료\n생성된 채널: {channel_mention}",
+        )
+        self.add_item(container)
+
+
+class MiddlemanPanelView(discord.ui.LayoutView):
+    def __init__(self, cog: "MiddlemanCog", gif_name: str | None = None):
         super().__init__(timeout=None)
         self.cog = cog
 
-    @discord.ui.button(label="중개 시작하기", style=discord.ButtonStyle.success, custom_id="devilblox:mm:start")
-    async def start(self, interaction: discord.Interaction, _: discord.ui.Button):
+        container = discord.ui.Container(accent_color=COLOR_INFO)
+        _add_brand_section(
+            container,
+            "## MIDDLEMAN SERVICE\n중개 시작 또는 중개자 정보를 확인할 수 있습니다.",
+        )
+        _add_panel_gif(container, gif_name)
+        container.add_item(discord.ui.Separator(spacing=discord.SeparatorSpacing.small))
+
+        start_button = discord.ui.Button(
+            label="중개 시작하기",
+            style=discord.ButtonStyle.success,
+            custom_id="devilblox:mm:start",
+        )
+        start_button.callback = self.start
+        info_button = discord.ui.Button(
+            label="중개자 정보",
+            style=discord.ButtonStyle.primary,
+            custom_id="devilblox:mm:info",
+        )
+        info_button.callback = self.info
+        container.add_item(discord.ui.ActionRow(start_button, info_button))
+        self.add_item(container)
+
+    async def start(self, interaction: discord.Interaction):
         view = MiddlemanDraftView(self.cog, interaction.user)
-        embed = view.build_embed(interaction.user)
-        await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
+        await interaction.response.send_message(
+            **_panel_send_kwargs(view, None),
+            ephemeral=True,
+        )
         view.message = await interaction.original_response()
 
-    @discord.ui.button(label="중개자 정보", style=discord.ButtonStyle.primary, custom_id="devilblox:mm:info")
-    async def info(self, interaction: discord.Interaction, _: discord.ui.Button):
+    async def info(self, interaction: discord.Interaction):
         middlemen = await self.cog.repos.middlemen.list_all(interaction.guild.id)
         if not middlemen:
             await interaction.response.send_message(embed=error_embed("중개자 없음", "등록된 중개자가 없습니다."), ephemeral=True)
             return
         await interaction.response.send_message(
-            embed=info_embed("MIDDLEMAN INFO", "확인할 중개자를 선택하세요."),
-            view=MiddlemanInfoView(self.cog, middlemen),
+            **_panel_send_kwargs(MiddlemanInfoView(self.cog, middlemen), None),
             ephemeral=True,
         )
 
@@ -174,16 +320,33 @@ class MiddlemanCog(commands.Cog):
         return self.bot.repos
 
     async def refresh_middleman_panel(self, guild: discord.Guild, *, rotate_image: bool = False):
-        await restore_panel_message(
-            self.repos,
-            guild,
-            "middleman",
-            "middleman_panel_message_id",
-            embed=info_embed("MIDDLEMAN SERVICE", "중개 시작 또는 중개자 정보를 확인할 수 있습니다."),
-            view=MiddlemanPanelView(self),
-            image_attachment_filename=PANEL_GIFS,
-            rotate_image=rotate_image,
-        )
+        settings = await self.repos.settings.get(guild.id)
+        channel_id = settings["channels"].get("middleman")
+        message_id = settings["meta"].get("middleman_panel_message_id")
+        if not channel_id or not message_id:
+            return
+        channel = guild.get_channel(channel_id)
+        if channel is None or not hasattr(channel, "fetch_message"):
+            return
+        try:
+            message = await channel.fetch_message(message_id)
+            gif_name = choose_gif(
+                PANEL_GIFS,
+                message.attachments,
+                force_new=rotate_image,
+                existing_urls=message_media_urls(message),
+            )
+            view = MiddlemanPanelView(self, gif_name)
+            await message.edit(**_panel_edit_kwargs(message, view, gif_name))
+        except discord.NotFound:
+            await self.repos.settings.set_value(
+                guild.id,
+                "meta",
+                "middleman_panel_message_id",
+                None,
+            )
+        except discord.HTTPException:
+            return
 
     @tasks.loop(minutes=1)
     async def restore_middleman_panel_loop(self):
@@ -244,7 +407,10 @@ class MiddlemanCog(commands.Cog):
         await self.repos.tickets.set_panel_message(guild.id, channel.id, ticket_message.id)
         draft_view.open_button.disabled = True
         if draft_view.message:
-            await draft_view.message.edit(embed=success_embed("중개 티켓 생성 완료", channel.mention), view=None)
+            completed_view = MiddlemanDraftCompleteView(channel.mention)
+            await draft_view.message.edit(
+                **_panel_edit_kwargs(draft_view.message, completed_view, None)
+            )
         await interaction.followup.send(embed=success_embed("중개 티켓 생성 완료", channel.mention), ephemeral=True)
 
     @app_commands.command(name="중개자등록", description="중개 서비스에 표시할 중개자를 등록합니다.")
@@ -256,10 +422,10 @@ class MiddlemanCog(commands.Cog):
     @app_commands.command(name="중개패널", description="현재 채널에 중개 패널을 생성합니다.")
     @app_commands.default_permissions(administrator=True)
     async def middleman_panel(self, interaction: discord.Interaction):
-        embed = info_embed("MIDDLEMAN SERVICE", "중개 시작 또는 중개자 정보를 확인할 수 있습니다.")
+        gif_name = choose_gif(PANEL_GIFS)
+        view = MiddlemanPanelView(self, gif_name)
         message = await interaction.channel.send(
-            **random_embed_gif_kwargs(embed, PANEL_GIFS),
-            view=MiddlemanPanelView(self),
+            **_panel_send_kwargs(view, gif_name),
         )
         await save_panel_location(
             self.repos,

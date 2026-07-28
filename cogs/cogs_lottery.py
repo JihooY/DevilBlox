@@ -178,69 +178,6 @@ class LotteryTicketRevealView(discord.ui.LayoutView):
         )
 
 
-def lottery_ticket_embed(event: dict, entry: dict, revealed_count: int) -> discord.Embed:
-    revealed_count = max(0, min(3, int(revealed_count)))
-    shapes = list(entry.get("shapes") or [])
-    is_complete = revealed_count >= 3
-    is_winner = bool(entry.get("is_winner"))
-    title = "당첨!" if is_complete and is_winner else "아쉽게도 꽝" if is_complete else "복권 개봉"
-    description = "\n".join(
-        [
-            f"`{format_reveal_slots(shapes, revealed_count)}`",
-            f"{revealed_count}/3",
-            reveal_status_text(revealed_count, is_winner),
-        ]
-    )
-    if is_complete and is_winner:
-        embed = success_embed(title, description)
-    elif is_complete:
-        embed = error_embed(title, description)
-    else:
-        embed = info_embed(title, description)
-    embed.add_field(name="추첨", value=f"{event.get('title', '도형 복권 추첨')} (`{event['_id']}`)", inline=False)
-    embed.set_image(url=BRAND_LOGO_URL)
-    return embed
-
-
-class LotteryTicketButtonView(discord.ui.View):
-    def __init__(self, cog: "LotteryCog", event: dict, entry: dict, user_id: int, revealed_count: int = 0):
-        super().__init__(timeout=900)
-        self.cog = cog
-        self.event = event
-        self.entry = entry
-        self.user_id = user_id
-        self.revealed_count = max(0, min(3, int(revealed_count)))
-
-        if self.revealed_count == 0:
-            label = "첫 번째 칸 열기"
-        elif self.revealed_count == 1:
-            label = "두 번째 칸 열기"
-        elif self.revealed_count == 2:
-            label = "마지막 칸 열기"
-        else:
-            label = "개봉 완료"
-
-        button = discord.ui.Button(
-            label=label,
-            style=discord.ButtonStyle.success if self.revealed_count < 3 else discord.ButtonStyle.secondary,
-            disabled=self.revealed_count >= 3,
-        )
-        button.callback = self.reveal_next
-        self.add_item(button)
-
-    async def reveal_next(self, interaction: discord.Interaction):
-        if interaction.user.id != self.user_id:
-            await interaction.response.send_message("이 복권은 본인만 열 수 있습니다.", ephemeral=True)
-            return
-        await self.cog.handle_ticket_embed_reveal(
-            interaction,
-            self.event,
-            self.entry,
-            self.user_id,
-            self.revealed_count + 1,
-        )
-
-
 class LotteryCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
@@ -340,32 +277,12 @@ class LotteryCog(commands.Cog):
             kwargs["attachments"] = panel_attachments(interaction.message)
         await interaction.response.edit_message(**kwargs)
 
-    async def handle_ticket_embed_reveal(
-        self,
-        interaction: discord.Interaction,
-        event: dict,
-        entry: dict,
-        user_id: int,
-        revealed_count: int,
-    ):
-        revealed_count = max(0, min(3, int(revealed_count)))
-        if revealed_count >= 3:
-            entry = await self.repos.lottery.mark_opened(event["guild_id"], event["_id"], user_id)
-        kwargs = {
-            "embed": lottery_ticket_embed(event, entry, revealed_count),
-            "view": LotteryTicketButtonView(self, event, entry, user_id, revealed_count),
-        }
-        if interaction.message is not None:
-            kwargs["attachments"] = panel_attachments(interaction.message)
-        await interaction.response.edit_message(**kwargs)
-
     async def send_lottery_ticket_dm(self, event: dict, entry: dict) -> tuple[bool, str]:
         user_id = int(entry["user_id"])
         try:
             user = self.bot.get_user(user_id) or await self.bot.fetch_user(user_id)
             await user.send(
-                embed=lottery_ticket_embed(event, entry, 0),
-                view=LotteryTicketButtonView(self, event, entry, user_id),
+                view=LotteryTicketRevealView(self, event, entry, user_id),
                 files=branded_files(),
             )
         except discord.Forbidden:

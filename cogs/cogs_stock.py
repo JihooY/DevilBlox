@@ -9,7 +9,14 @@ from discord import app_commands
 from discord.ext import commands, tasks
 
 from database.stock import normalize_stock_id
-from utils.embeds import BRAND_LOGO_FILENAME, branded_files, embed_kwargs, error_embed, info_embed, success_embed
+from utils.embeds import (
+    BRAND_LOGO_FILENAME,
+    BRAND_LOGO_URL,
+    COLOR_INFO,
+    branded_files,
+    error_embed,
+    success_embed,
+)
 from utils.gifs import (
     SUCCESS_GIFS,
     random_embed_gif_kwargs,
@@ -23,6 +30,29 @@ log = logging.getLogger(__name__)
 def stock_panel_attachments(message: discord.Message) -> list[discord.Attachment | discord.File]:
     logo_attachments = [attachment for attachment in message.attachments if attachment.filename == BRAND_LOGO_FILENAME]
     return logo_attachments or branded_files()
+
+
+def stock_panel_send_kwargs(view: discord.ui.LayoutView) -> dict:
+    kwargs = {
+        "view": view,
+        "allowed_mentions": discord.AllowedMentions.none(),
+    }
+    files = branded_files()
+    if files:
+        kwargs["files"] = files
+    return kwargs
+
+
+def stock_panel_edit_kwargs(message: discord.Message, view: discord.ui.LayoutView) -> dict:
+    # Components V2 cannot coexist with legacy content or embeds. Clearing both
+    # also migrates already-saved stock panels in place on their next refresh.
+    return {
+        "content": None,
+        "embeds": [],
+        "view": view,
+        "attachments": stock_panel_attachments(message),
+        "allowed_mentions": discord.AllowedMentions.none(),
+    }
 
 
 def parse_quantity(value: str) -> int | None:
@@ -112,7 +142,59 @@ class StockItemSelect(discord.ui.Select):
         await self.cog.handle_control_select(interaction, self.values[0])
 
 
-class StockControlView(discord.ui.View):
+def stock_condition_text(items: list[dict], *, max_length: int = 3_700) -> str:
+    if not items:
+        return "### 상품별 재고\n등록된 재고 상품이 없습니다."
+
+    lines = ["### 상품별 재고"]
+    for index, item in enumerate(items):
+        item_id = str(item.get("item_id") or item.get("item_id_lower") or "-")
+        name = str(item.get("name") or item_id)
+        quantity = int(item.get("quantity", 0) or 0)
+        item_line = f"- **{name}** (`{item_id}`) · `{quantity:,}개`"
+        hidden_count = len(items) - index
+        overflow_line = f"-# 외 `{hidden_count}`개 상품은 길이 제한으로 생략되었습니다."
+        if len("\n".join((*lines, item_line, overflow_line))) > max_length:
+            lines.append(overflow_line)
+            break
+        lines.append(item_line)
+    return "\n".join(lines)
+
+
+def add_stock_brand_section(container: discord.ui.Container, content: str):
+    container.add_item(
+        discord.ui.Section(
+            discord.ui.TextDisplay(content),
+            accessory=discord.ui.Thumbnail(BRAND_LOGO_URL, description="DevilBlox logo"),
+        )
+    )
+
+
+class StockConditionView(discord.ui.LayoutView):
+    def __init__(self, items: list[dict], reset_at: int | None = None):
+        super().__init__(timeout=None)
+        container = discord.ui.Container(accent_color=COLOR_INFO)
+        add_stock_brand_section(
+            container,
+            "\n".join(
+                (
+                    "## STOCK CONDITION",
+                    "현재 등록된 상품 재고 수량을 표시합니다.",
+                    f"등록 상품 `{len(items)}`개",
+                )
+            ),
+        )
+        container.add_item(discord.ui.Separator())
+        container.add_item(discord.ui.TextDisplay(stock_condition_text(items)))
+        if reset_at:
+            container.add_item(discord.ui.Separator(spacing=discord.SeparatorSpacing.small))
+            container.add_item(
+                discord.ui.TextDisplay(f"-# 마지막 갱신 · <t:{reset_at}:F> (<t:{reset_at}:R>)")
+            )
+        self.add_item(container)
+
+
+class StockControlView(discord.ui.LayoutView):
     def __init__(self, cog: "StockCog", items: list[dict], selected_item_id: str | None = None):
         super().__init__(timeout=None)
         self.cog = cog
@@ -120,7 +202,36 @@ class StockControlView(discord.ui.View):
         self.selected_item_id = self.resolve_selected_item_id(items, selected_item_id)
         selected = self.selected_item(items, self.selected_item_id)
 
-        self.add_item(StockItemSelect(cog, items, self.selected_item_id))
+        container = discord.ui.Container(accent_color=COLOR_INFO)
+        add_stock_brand_section(
+            container,
+            "\n".join(
+                (
+                    "## STOCK CONTROL",
+                    "상품 등록과 재고 수량 조정을 처리합니다.",
+                    f"등록 상품 `{len(items)}`개",
+                )
+            ),
+        )
+
+        if selected is None:
+            selected_text = "### 선택 상품\n등록된 상품이 없습니다.\n-# 아래 상품 등록 버튼으로 첫 상품을 추가해주세요."
+        else:
+            item_id = selected.get("item_id") or selected.get("item_id_lower")
+            name = selected.get("name") or item_id
+            quantity = int(selected.get("quantity", 0) or 0)
+            selected_text = (
+                f"### 선택 상품\n**{name}**\n"
+                f"-# 상품 ID · `{item_id}`\n\n"
+                f"### 현재 재고\n`{quantity:,}개`"
+            )
+
+        container.add_item(discord.ui.Separator())
+        container.add_item(discord.ui.TextDisplay(selected_text))
+        container.add_item(discord.ui.Separator(spacing=discord.SeparatorSpacing.small))
+        container.add_item(discord.ui.ActionRow(StockItemSelect(cog, items, self.selected_item_id)))
+
+        quantity_buttons = []
         for label, delta, style, custom_id in (
             ("-5", -5, discord.ButtonStyle.danger, "devilblox:stock:control:minus5"),
             ("-1", -1, discord.ButtonStyle.secondary, "devilblox:stock:control:minus1"),
@@ -129,7 +240,7 @@ class StockControlView(discord.ui.View):
         ):
             button = discord.ui.Button(label=label, style=style, custom_id=custom_id, disabled=selected is None)
             button.callback = self.adjust_callback(delta)
-            self.add_item(button)
+            quantity_buttons.append(button)
 
         adjust_button = discord.ui.Button(
             label="수량 지정",
@@ -138,7 +249,8 @@ class StockControlView(discord.ui.View):
             disabled=selected is None,
         )
         adjust_button.callback = self.adjust_custom
-        self.add_item(adjust_button)
+        quantity_buttons.append(adjust_button)
+        container.add_item(discord.ui.ActionRow(*quantity_buttons))
 
         register_button = discord.ui.Button(
             label="상품 등록",
@@ -146,7 +258,6 @@ class StockControlView(discord.ui.View):
             custom_id="devilblox:stock:control:register",
         )
         register_button.callback = self.register_item
-        self.add_item(register_button)
 
         delete_button = discord.ui.Button(
             label="상품 삭제",
@@ -155,7 +266,6 @@ class StockControlView(discord.ui.View):
             disabled=selected is None,
         )
         delete_button.callback = self.delete_item
-        self.add_item(delete_button)
 
         refresh_button = discord.ui.Button(
             label="새로고침",
@@ -163,7 +273,8 @@ class StockControlView(discord.ui.View):
             custom_id="devilblox:stock:control:refresh",
         )
         refresh_button.callback = self.refresh
-        self.add_item(refresh_button)
+        container.add_item(discord.ui.ActionRow(register_button, delete_button, refresh_button))
+        self.add_item(container)
 
     @staticmethod
     def resolve_selected_item_id(items: list[dict], selected_item_id: str | None) -> str | None:
@@ -249,41 +360,25 @@ class StockCog(commands.Cog):
             settings["roles"].get("admin"),
         )
 
-    async def build_stock_condition_embed(self, guild: discord.Guild, reset_at: int | None = None) -> discord.Embed:
+    async def build_stock_condition_view(
+        self,
+        guild: discord.Guild,
+        reset_at: int | None = None,
+    ) -> StockConditionView:
         items = await self.repos.stock.list_active(guild.id)
-        embed = info_embed("STOCK CONDITION", "현재 등록된 상품 재고 수량을 표시합니다.")
         if reset_at is None:
             settings = await self.repos.settings.get(guild.id)
             reset_at = settings["meta"].get("stock_condition_reset_at")
+        return StockConditionView(items, reset_at)
 
-        if not items:
-            embed.description = "등록된 재고 상품이 없습니다."
-        for item in items:
-            embed.add_field(
-                name=f"{item.get('name') or item['item_id']} (`{item['item_id']}`)",
-                value=f"{int(item.get('quantity', 0) or 0)}개",
-                inline=False,
-            )
-        if reset_at:
-            embed.add_field(name="LAST RESET", value=f"<t:{reset_at}:F> (<t:{reset_at}:R>)", inline=False)
-        return embed
-
-    async def build_stock_control_payload(
+    async def build_stock_control_view(
         self,
         guild: discord.Guild,
         selected_item_id: str | None = None,
-    ) -> tuple[discord.Embed, StockControlView]:
+    ) -> StockControlView:
         items = await self.repos.stock.list_active(guild.id)
         selected_id = StockControlView.resolve_selected_item_id(items, selected_item_id)
-        selected = StockControlView.selected_item(items, selected_id)
-        embed = info_embed("STOCK CONTROL", "상품 등록과 재고 수량 조정을 처리합니다.")
-        embed.add_field(name="등록 상품", value=f"{len(items)}개", inline=True)
-        if selected is None:
-            embed.add_field(name="선택 상품", value="등록된 상품이 없습니다.", inline=False)
-        else:
-            embed.add_field(name="선택 상품", value=f"{selected.get('name') or selected['item_id']} (`{selected['item_id']}`)", inline=False)
-            embed.add_field(name="현재 재고", value=f"{int(selected.get('quantity', 0) or 0)}개", inline=True)
-        return embed, StockControlView(self, items, selected_id)
+        return StockControlView(self, items, selected_id)
 
     async def refresh_stock_condition_panel(self, guild: discord.Guild, *, rotate_image: bool = False):
         settings = await self.repos.settings.get(guild.id)
@@ -298,8 +393,8 @@ class StockCog(commands.Cog):
         try:
             message = await channel.fetch_message(message_id)
             await self.repos.settings.set_value(guild.id, "meta", "stock_condition_reset_at", reset_at)
-            embed = await self.build_stock_condition_embed(guild, reset_at=reset_at)
-            await message.edit(embed=embed, attachments=stock_panel_attachments(message))
+            view = await self.build_stock_condition_view(guild, reset_at=reset_at)
+            await message.edit(**stock_panel_edit_kwargs(message, view))
         except discord.NotFound:
             await self.repos.settings.set_value(guild.id, "meta", "stock_condition_message_id", None)
         except discord.HTTPException:
@@ -322,21 +417,17 @@ class StockCog(commands.Cog):
             return
         try:
             message = await channel.fetch_message(message_id)
-            embed, view = await self.build_stock_control_payload(guild, selected_item_id)
-            await message.edit(embed=embed, view=view, attachments=stock_panel_attachments(message))
+            view = await self.build_stock_control_view(guild, selected_item_id)
+            await message.edit(**stock_panel_edit_kwargs(message, view))
         except discord.NotFound:
             await self.repos.settings.set_value(guild.id, "meta", "stock_control_message_id", None)
         except discord.HTTPException:
             return
 
     async def update_control_message(self, interaction: discord.Interaction, selected_item_id: str | None = None):
-        embed, view = await self.build_stock_control_payload(interaction.guild, selected_item_id)
+        view = await self.build_stock_control_view(interaction.guild, selected_item_id)
         if interaction.message is not None:
-            await interaction.message.edit(
-                embed=embed,
-                view=view,
-                attachments=stock_panel_attachments(interaction.message),
-            )
+            await interaction.message.edit(**stock_panel_edit_kwargs(interaction.message, view))
             return
         await self.refresh_stock_control_panel(interaction.guild, selected_item_id)
 
@@ -469,8 +560,8 @@ class StockCog(commands.Cog):
     async def stock_condition_panel(self, interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True)
         reset_at = int(time.time())
-        embed = await self.build_stock_condition_embed(interaction.guild, reset_at=reset_at)
-        message = await interaction.channel.send(**embed_kwargs(embed))
+        view = await self.build_stock_condition_view(interaction.guild, reset_at=reset_at)
+        message = await interaction.channel.send(**stock_panel_send_kwargs(view))
         await save_panel_location(
             self.repos,
             interaction.guild.id,
@@ -489,8 +580,8 @@ class StockCog(commands.Cog):
         if not await self.staff_allowed(interaction):
             await interaction.followup.send(embed=error_embed("권한 없음", "셀러 또는 관리자 권한이 필요합니다."), ephemeral=True)
             return
-        embed, view = await self.build_stock_control_payload(interaction.guild)
-        message = await interaction.channel.send(**embed_kwargs(embed), view=view)
+        view = await self.build_stock_control_view(interaction.guild)
+        message = await interaction.channel.send(**stock_panel_send_kwargs(view))
         await save_panel_location(
             self.repos,
             interaction.guild.id,

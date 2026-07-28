@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import io
-import os
 import re
 from collections.abc import Callable
 from urllib.parse import parse_qs, urlparse
@@ -10,6 +9,32 @@ import discord
 from discord import app_commands
 from discord.ext import commands, tasks
 
+from cogs.vending_views import (
+    ArchivePanelView,
+    ArchiveResultView,
+    ArchiveSearchModal,
+    CategoryMenuView,
+    CategorySelect,
+    ChargeAdminView,
+    ChargeRequestModal,
+    COLOR_ARCHIVE,
+    COLOR_VENDING,
+    DiscountMenuView,
+    DownloadSelect,
+    DownloadSelectView,
+    ProductDetailView,
+    ProductMenuView,
+    ProductPurchaseModal,
+    ProductSelect,
+    PromotionCodeModal,
+    RejectChargeModal,
+    SELECT_OPTION_LIMIT,
+    VendingCouponSelect,
+    VendingPanelView,
+    add_brand_section,
+    add_panel_gif,
+    chunked,
+)
 from database.vending import (
     ArchiveStore,
     ProductCategoryStore,
@@ -17,9 +42,9 @@ from database.vending import (
     VendingLogStore,
     normalize_product_id,
 )
+from services.vending import VendingCommerceService
 from utils.embeds import (
     BRAND_LOGO_FILENAME,
-    BRAND_LOGO_URL,
     branded_files,
     error_embed,
     info_embed,
@@ -33,7 +58,6 @@ from utils.gifs import (
     choose_gif,
     gif_delivery_status,
     gif_file,
-    gif_media_url,
     is_gif_filename,
     message_media_urls,
     random_embed_gif_kwargs,
@@ -44,35 +68,8 @@ from utils.roles import has_role
 
 
 YOUTUBE_HOSTS = {"youtube.com", "www.youtube.com", "m.youtube.com", "youtu.be", "www.youtu.be"}
-COLOR_VENDING = 0x5865F2
-COLOR_ARCHIVE = 0x2ECC71
 MAX_CHARGE_PROOF_BYTES = 8 * 1024 * 1024
 IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".gif"}
-SELECT_OPTION_LIMIT = 25
-
-
-def chunked(items: list[dict], size: int = SELECT_OPTION_LIMIT) -> list[list[dict]]:
-    return [items[index : index + size] for index in range(0, len(items), size)]
-
-
-def add_panel_gif(container: discord.ui.Container, filename: str | None, description: str):
-    media_url = gif_media_url(filename)
-    if not media_url:
-        return
-    container.add_item(
-        discord.ui.MediaGallery(
-            discord.MediaGalleryItem(media_url, description=description)
-        )
-    )
-
-
-def add_brand_section(container: discord.ui.Container, content: str):
-    container.add_item(
-        discord.ui.Section(
-            discord.ui.TextDisplay(content),
-            accessory=discord.ui.Thumbnail(BRAND_LOGO_URL, description="DevilBlox logo"),
-        )
-    )
 
 
 def parse_positive_amount(value: str) -> int | None:
@@ -116,6 +113,17 @@ def attachment_image_url(filename: str) -> str:
     return f"attachment://{filename}"
 
 
+def message_attachment_url(message: discord.Message, filename: str) -> str:
+    return next(
+        (
+            attachment.url
+            for attachment in message.attachments
+            if attachment.filename == filename
+        ),
+        "",
+    )
+
+
 def normalize_youtube_url(raw_url: str) -> tuple[str, str] | None:
     value = raw_url.strip()
     if not value:
@@ -146,520 +154,10 @@ def normalize_youtube_url(raw_url: str) -> tuple[str, str] | None:
     return video_id, f"https://youtu.be/{video_id}"
 
 
-class ChargeRequestModal(discord.ui.Modal, title="충전 신청"):
-    depositor_name = discord.ui.TextInput(
-        label="입금자명",
-        placeholder="입금자명을 입력하세요.",
-        max_length=50,
-    )
-    amount = discord.ui.TextInput(
-        label="입금 금액",
-        placeholder="예: 10000",
-        max_length=20,
-    )
-
-    def __init__(self, cog: "VendingArchiveCog"):
-        super().__init__()
-        self.cog = cog
-        self.proof_upload = discord.ui.FileUpload(required=True, min_values=1, max_values=1)
-        self.add_item(
-            discord.ui.Label(
-                text="입금 사진",
-                description="입금 확인용 이미지 1장을 업로드하세요.",
-                component=self.proof_upload,
-            )
-        )
-
-    async def on_submit(self, interaction: discord.Interaction):
-        await self.cog.handle_charge_submit(
-            interaction,
-            depositor_name=str(self.depositor_name.value),
-            amount_text=str(self.amount.value),
-            proof=self.proof_upload.values[0] if self.proof_upload.values else None,
-        )
-
-
-class RejectChargeModal(discord.ui.Modal, title="충전 거절 사유"):
-    reason = discord.ui.TextInput(
-        label="거절 사유",
-        style=discord.TextStyle.paragraph,
-        placeholder="유저에게 전달할 사유를 입력하세요.",
-        max_length=500,
-    )
-
-    def __init__(self, cog: "VendingArchiveCog", admin_message_id: int):
-        super().__init__()
-        self.cog = cog
-        self.admin_message_id = admin_message_id
-
-    async def on_submit(self, interaction: discord.Interaction):
-        await self.cog.handle_reject_charge(interaction, self.admin_message_id, str(self.reason.value))
-
-
-class ProductPurchaseModal(discord.ui.Modal, title="상품 구매"):
-    def __init__(self, cog: "VendingArchiveCog", product_id: str = ""):
-        super().__init__()
-        self.cog = cog
-        self.product_id = discord.ui.TextInput(
-            label="상품 ID",
-            placeholder="구매할 상품 ID를 입력하세요.",
-            default=product_id,
-            max_length=64,
-        )
-        self.add_item(self.product_id)
-
-    async def on_submit(self, interaction: discord.Interaction):
-        await self.cog.handle_purchase(interaction, str(self.product_id.value))
-
-
-class ArchiveSearchModal(discord.ui.Modal, title="아카이브 검색"):
-    youtube_url = discord.ui.TextInput(
-        label="유튜브 URL",
-        placeholder="영상 우클릭 후 복사한 링크를 붙여넣으세요.",
-        max_length=300,
-    )
-
-    def __init__(self, cog: "VendingArchiveCog"):
-        super().__init__()
-        self.cog = cog
-
-    async def on_submit(self, interaction: discord.Interaction):
-        await self.cog.handle_archive_search(interaction, str(self.youtube_url.value))
-
-
-class ChargeAdminView(discord.ui.View):
-    def __init__(self, cog: "VendingArchiveCog"):
-        super().__init__(timeout=None)
-        self.cog = cog
-
-    @discord.ui.button(
-        label="수락",
-        style=discord.ButtonStyle.success,
-        custom_id="devilblox:vending:charge:approve",
-    )
-    async def approve(self, interaction: discord.Interaction, _: discord.ui.Button):
-        await self.cog.handle_approve_charge(interaction)
-
-    @discord.ui.button(
-        label="거절",
-        style=discord.ButtonStyle.danger,
-        custom_id="devilblox:vending:charge:reject",
-    )
-    async def reject(self, interaction: discord.Interaction, _: discord.ui.Button):
-        if not await self.cog.admin_allowed(interaction):
-            await interaction.response.defer(ephemeral=True)
-            await interaction.followup.send(embed=error_embed("권한 없음", "관리자 권한이 필요합니다."), ephemeral=True)
-            return
-        if interaction.message is None:
-            await interaction.response.defer(ephemeral=True)
-            await interaction.followup.send(embed=error_embed("처리 실패", "요청 메시지를 찾을 수 없습니다."), ephemeral=True)
-            return
-        await interaction.response.send_modal(RejectChargeModal(self.cog, interaction.message.id))
-
-
-class VendingPanelView(discord.ui.LayoutView):
-    def __init__(self, cog: "VendingArchiveCog", *, stats: dict | None = None, gif_name: str | None = None):
-        super().__init__(timeout=None)
-        self.cog = cog
-
-        bank_account = os.getenv("VENDING_BANK_ACCOUNT", "").strip()
-        lines = [
-            "## VENDING MACHINE",
-            "충전, 카테고리별 상품 구매, 구매한 상품 다운로드를 이용할 수 있습니다.",
-        ]
-        if bank_account:
-            lines.append(f"입금 계좌: `{bank_account}`")
-        if stats:
-            lines.append(
-                f"등록 카테고리 `{stats.get('category_count', 0)}`개 · 판매 상품 `{stats.get('product_count', 0)}`개"
-            )
-
-        container = discord.ui.Container(accent_color=COLOR_VENDING)
-        add_brand_section(container, "\n".join(lines))
-        add_panel_gif(container, gif_name, "DevilBlox vending panel")
-        container.add_item(discord.ui.Separator())
-
-        charge_button = discord.ui.Button(
-            label="충전",
-            style=discord.ButtonStyle.success,
-            custom_id="devilblox:vending:charge",
-        )
-        charge_button.callback = self.charge
-
-        catalog_button = discord.ui.Button(
-            label="상품목록",
-            style=discord.ButtonStyle.secondary,
-            custom_id="devilblox:vending:catalog",
-        )
-        catalog_button.callback = self.catalog
-
-        buy_button = discord.ui.Button(
-            label="구매",
-            style=discord.ButtonStyle.primary,
-            custom_id="devilblox:vending:buy",
-        )
-        buy_button.callback = self.buy
-
-        download_button = discord.ui.Button(
-            label="다운로드",
-            style=discord.ButtonStyle.secondary,
-            custom_id="devilblox:vending:download",
-        )
-        download_button.callback = self.download
-        container.add_item(discord.ui.ActionRow(charge_button, catalog_button, buy_button, download_button))
-
-        self.add_item(container)
-
-    async def charge(self, interaction: discord.Interaction):
-        await interaction.response.send_modal(ChargeRequestModal(self.cog))
-
-    async def catalog(self, interaction: discord.Interaction):
-        await self.cog.handle_category_menu(interaction, mode="catalog")
-
-    async def buy(self, interaction: discord.Interaction):
-        await self.cog.handle_category_menu(interaction, mode="buy")
-
-    async def download(self, interaction: discord.Interaction):
-        await self.cog.handle_download_menu(interaction)
-
-
-class ArchivePanelView(discord.ui.LayoutView):
-    def __init__(self, cog: "VendingArchiveCog", *, gif_name: str | None = None):
-        super().__init__(timeout=None)
-        self.cog = cog
-        container = discord.ui.Container(accent_color=COLOR_ARCHIVE)
-        add_brand_section(container, "## ARCHIVE\n유튜브 영상 URL로 영상에 사용된 상품을 검색할 수 있습니다.")
-        add_panel_gif(container, gif_name, "DevilBlox archive panel")
-        container.add_item(discord.ui.Separator())
-        search_button = discord.ui.Button(
-            label="검색",
-            style=discord.ButtonStyle.primary,
-            custom_id="devilblox:archive:search",
-        )
-        search_button.callback = self.search
-        container.add_item(discord.ui.ActionRow(search_button))
-        self.add_item(container)
-
-    async def search(self, interaction: discord.Interaction):
-        await interaction.response.send_modal(ArchiveSearchModal(self.cog))
-
-
-class ArchiveResultView(discord.ui.View):
-    def __init__(self, cog: "VendingArchiveCog", product_id: str, page_url: str | None):
-        super().__init__(timeout=180)
-        self.cog = cog
-        self.product_id = product_id
-        if page_url:
-            self.add_item(discord.ui.Button(label="상품 페이지", style=discord.ButtonStyle.link, url=page_url))
-
-    @discord.ui.button(label="구매하기", style=discord.ButtonStyle.success)
-    async def buy(self, interaction: discord.Interaction, _: discord.ui.Button):
-        await interaction.response.send_modal(ProductPurchaseModal(self.cog, self.product_id))
-
-
-class CategorySelect(discord.ui.Select):
-    def __init__(
-        self,
-        cog: "VendingArchiveCog",
-        categories: list[dict],
-        mode: str,
-        *,
-        page_index: int = 0,
-        page_count: int = 1,
-    ):
-        self.cog = cog
-        self.mode = mode
-        options = []
-        for category in categories[:SELECT_OPTION_LIMIT]:
-            label = category.get("name") or category.get("category_id") or "카테고리"
-            option = discord.SelectOption(
-                label=str(label)[:100],
-                value=str(category.get("category_id_lower") or normalize_product_id(category["category_id"])),
-                description=(category.get("description") or f"ID: {category['category_id']}")[:100],
-            )
-            if category.get("emoji"):
-                option.emoji = category["emoji"]
-            options.append(option)
-
-        if not options:
-            options.append(discord.SelectOption(label="등록된 카테고리가 없습니다.", value="none"))
-
-        placeholder = "카테고리를 선택하세요."
-        if page_count > 1:
-            placeholder = f"카테고리 선택 ({page_index + 1}/{page_count})"
-        super().__init__(
-            placeholder=placeholder,
-            min_values=1,
-            max_values=1,
-            options=options,
-            disabled=not categories,
-        )
-
-    async def callback(self, interaction: discord.Interaction):
-        if self.values[0] == "none":
-            await interaction.response.defer(ephemeral=True)
-            await interaction.followup.send(
-                embed=error_embed("카테고리 없음", "`/상품카테고리등록`으로 카테고리를 먼저 등록해주세요."),
-                ephemeral=True,
-            )
-            return
-        await self.cog.handle_category_selected(interaction, self.values[0], self.mode)
-
-
-class CategoryMenuView(discord.ui.LayoutView):
-    def __init__(self, cog: "VendingArchiveCog", categories: list[dict], mode: str):
-        super().__init__(timeout=180)
-        title = "상품 구매" if mode == "buy" else "상품 목록"
-        container = discord.ui.Container(accent_color=COLOR_VENDING)
-        add_brand_section(container, f"## {title}\n카테고리를 선택하면 해당 카테고리의 상품이 표시됩니다.")
-        container.add_item(discord.ui.Separator())
-        category_chunks = chunked(categories)
-        for page_index, category_chunk in enumerate(category_chunks):
-            container.add_item(
-                discord.ui.ActionRow(
-                    CategorySelect(
-                        cog,
-                        category_chunk,
-                        mode,
-                        page_index=page_index,
-                        page_count=len(category_chunks),
-                    )
-                )
-            )
-        self.add_item(container)
-
-
-class ProductSelect(discord.ui.Select):
-    def __init__(
-        self,
-        cog: "VendingArchiveCog",
-        products: list[dict],
-        mode: str,
-        *,
-        page_index: int = 0,
-        page_count: int = 1,
-    ):
-        self.cog = cog
-        self.mode = mode
-        options = []
-        for product in products[:SELECT_OPTION_LIMIT]:
-            product_id = product.get("product_id") or product.get("product_id_lower")
-            price = int(product.get("price", 0))
-            description = f"{price:,}원 · ID: {product_id}"
-            options.append(
-                discord.SelectOption(
-                    label=str(product.get("title") or product_id)[:100],
-                    value=str(product.get("product_id_lower") or normalize_product_id(product_id)),
-                    description=description[:100],
-                )
-            )
-        if not options:
-            options.append(discord.SelectOption(label="등록된 상품이 없습니다.", value="none"))
-
-        placeholder = "상품을 선택하세요."
-        if page_count > 1:
-            placeholder = f"상품 선택 ({page_index + 1}/{page_count})"
-        super().__init__(
-            placeholder=placeholder,
-            min_values=1,
-            max_values=1,
-            options=options,
-            disabled=not products,
-        )
-
-    async def callback(self, interaction: discord.Interaction):
-        if self.values[0] == "none":
-            await interaction.response.defer(ephemeral=True)
-            await interaction.followup.send(embed=error_embed("상품 없음", "이 카테고리에 상품이 없습니다."), ephemeral=True)
-            return
-        await self.cog.handle_product_selected(interaction, self.values[0], self.mode)
-
-
-class ProductMenuView(discord.ui.LayoutView):
-    def __init__(self, cog: "VendingArchiveCog", category: dict | None, products: list[dict], mode: str):
-        super().__init__(timeout=180)
-        category_name = (category or {}).get("name") or "카테고리"
-        lines = [f"## {category_name}", "상품을 선택하면 상세 정보와 구매 버튼이 표시됩니다."]
-        if products:
-            lines.append("")
-            lines.extend(
-                f"- `{product['product_id']}` · {product.get('title') or product['product_id']} · {int(product.get('price', 0)):,}원"
-                for product in products[:10]
-            )
-            if len(products) > 10:
-                lines.append(f"- 외 {len(products) - 10}개")
-
-        container = discord.ui.Container(accent_color=COLOR_VENDING)
-        add_brand_section(container, "\n".join(lines))
-        container.add_item(discord.ui.Separator())
-        product_chunks = chunked(products)
-        for page_index, product_chunk in enumerate(product_chunks):
-            container.add_item(
-                discord.ui.ActionRow(
-                    ProductSelect(
-                        cog,
-                        product_chunk,
-                        mode,
-                        page_index=page_index,
-                        page_count=len(product_chunks),
-                    )
-                )
-            )
-        self.add_item(container)
-
-
-class ProductDetailView(discord.ui.LayoutView):
-    def __init__(self, cog: "VendingArchiveCog", product: dict, *, owned: bool = False,
-                 discounted_price: int | None = None, applied: dict | None = None):
-        super().__init__(timeout=180)
-        self.cog = cog
-        self.product_id = product["product_id"]
-        lines = [
-            f"## {product.get('title') or product['product_id']}",
-            product.get("description") or "등록된 상품 설명이 없습니다.",
-            "",
-            f"상품 ID: `{product['product_id']}`",
-            f"가격: `{int(product.get('price', 0)):,}원`",
-            f"상품 페이지: {cog.product_thread_mention(product)}",
-        ]
-        original_price = int(product.get("price", 0))
-        if applied and discounted_price is not None and discounted_price < original_price:
-            discount_amount = original_price - discounted_price
-            value = f"{applied['discount']}%" if applied.get("discount_type", "percent") == "percent" else f"{int(applied['discount']):,}원"
-            lines.extend([
-                "",
-                f"적용 코드: **{applied.get('name') or applied['code']}** (`{applied['code']}` · {value})",
-                f"할인 금액: **-{discount_amount:,}원**",
-                f"적용 후 가격: **{discounted_price:,}원**",
-            ])
-        if owned:
-            lines.append("이미 구매한 상품입니다. 다운로드 버튼으로 링크를 다시 받을 수 있습니다.")
-
-        container = discord.ui.Container(accent_color=COLOR_VENDING)
-        add_brand_section(container, "\n".join(lines))
-        container.add_item(discord.ui.Separator())
-        buy_button = discord.ui.Button(
-            label="구매하기" if not owned else "다운로드",
-            style=discord.ButtonStyle.success if not owned else discord.ButtonStyle.secondary,
-        )
-        buy_button.callback = self.buy
-        discount_button = discord.ui.Button(label="쿠폰 / 프로모션", style=discord.ButtonStyle.primary)
-        discount_button.callback = self.discount
-        detail_buttons = [buy_button, discount_button]
-        page_url = cog.product_page_url(int(product["guild_id"]), product)
-        if page_url:
-            detail_buttons.append(discord.ui.Button(label="상품 페이지", style=discord.ButtonStyle.link, url=page_url))
-        container.add_item(discord.ui.ActionRow(*detail_buttons))
-        self.add_item(container)
-
-    async def buy(self, interaction: discord.Interaction):
-        await self.cog.handle_purchase(interaction, self.product_id)
-
-    async def discount(self, interaction: discord.Interaction):
-        await self.cog.handle_discount_menu(interaction, self.product_id)
-
-
-class PromotionCodeModal(discord.ui.Modal, title="프로모션 코드 입력"):
-    code = discord.ui.TextInput(label="프로모션 코드", max_length=40)
-    def __init__(self, cog, product_id):
-        super().__init__(); self.cog = cog; self.product_id = product_id
-    async def on_submit(self, interaction):
-        await self.cog.handle_promotion_code(interaction, self.product_id, str(self.code))
-
-
-class VendingCouponSelect(discord.ui.Select):
-    def __init__(self, cog, product_id, items):
-        self.cog = cog; self.product_id = product_id
-        options = [discord.SelectOption(label="쿠폰 사용 안 함", value="none")]
-        for owned in items[:24]:
-            coupon = owned["coupon"]
-            options.append(discord.SelectOption(
-                label=f"{coupon['name']} ({owned['quantity']}장)", value=coupon["code"],
-                description=f"{coupon['discount']}% 할인 · {coupon['code']}"[:100],
-            ))
-        super().__init__(placeholder="보유 쿠폰을 선택하세요", options=options)
-
-    async def callback(self, interaction):
-        await self.cog.handle_vending_coupon(
-            interaction, self.product_id, None if self.values[0] == "none" else self.values[0]
-        )
-
-
-class DiscountMenuView(discord.ui.LayoutView):
-    def __init__(self, cog, product_id, items):
-        super().__init__(timeout=300); self.cog = cog; self.product_id = product_id
-        box = discord.ui.Container(accent_color=COLOR_VENDING)
-        box.add_item(discord.ui.TextDisplay("## 쿠폰 / 프로모션\n보유 쿠폰을 선택하거나 프로모션 코드를 입력하세요."))
-        box.add_item(discord.ui.Separator())
-        if items:
-            box.add_item(discord.ui.ActionRow(VendingCouponSelect(cog, product_id, items)))
-        promotion = discord.ui.Button(label="프로모션 코드 입력", style=discord.ButtonStyle.primary)
-        promotion.callback = self.promotion
-        box.add_item(discord.ui.ActionRow(promotion)); self.add_item(box)
-
-    async def promotion(self, interaction):
-        await interaction.response.send_modal(PromotionCodeModal(self.cog, self.product_id))
-
-
-class DownloadSelect(discord.ui.Select):
-    def __init__(
-        self,
-        cog: "VendingArchiveCog",
-        owned_products: list[dict],
-        *,
-        page_index: int = 0,
-        page_count: int = 1,
-    ):
-        self.cog = cog
-        options = []
-        for owned in owned_products[:SELECT_OPTION_LIMIT]:
-            label = owned.get("title") or owned.get("product_id") or "상품"
-            product_id = owned.get("product_id") or owned.get("product_id_lower")
-            options.append(
-                discord.SelectOption(
-                    label=str(label)[:100],
-                    value=str(owned.get("product_id_lower") or normalize_product_id(product_id)),
-                    description=f"ID: {product_id}"[:100],
-                )
-            )
-        placeholder = "다운로드할 상품을 모두 선택하세요."
-        if page_count > 1:
-            placeholder = f"다운로드 상품 선택 ({page_index + 1}/{page_count})"
-        super().__init__(
-            placeholder=placeholder,
-            min_values=1,
-            max_values=max(1, min(len(options), 25)),
-            options=options,
-        )
-
-    async def callback(self, interaction: discord.Interaction):
-        await self.cog.handle_download_selected(interaction, list(self.values))
-
-
-class DownloadSelectView(discord.ui.LayoutView):
-    def __init__(self, cog: "VendingArchiveCog", owned_products: list[dict]):
-        super().__init__(timeout=180)
-        container = discord.ui.Container(accent_color=COLOR_VENDING)
-        add_brand_section(container, "## 다운로드\n링크를 다시 받을 상품을 하나 이상 선택하세요.")
-        container.add_item(discord.ui.Separator())
-        owned_chunks = chunked(owned_products)
-        for page_index, owned_chunk in enumerate(owned_chunks):
-            container.add_item(
-                discord.ui.ActionRow(
-                    DownloadSelect(
-                        cog,
-                        owned_chunk,
-                        page_index=page_index,
-                        page_count=len(owned_chunks),
-                    )
-                )
-            )
-        self.add_item(container)
-
-
 class VendingArchiveCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
+        self.commerce = VendingCommerceService(bot.repos)
         self.bot.add_view(VendingPanelView(self))
         self.bot.add_view(ArchivePanelView(self))
         self.bot.add_view(ChargeAdminView(self))
@@ -810,49 +308,23 @@ class VendingArchiveCog(commands.Cog):
             rotate_image=rotate_image,
         )
 
-    def build_charge_embed(
+    def build_charge_view(
         self,
         charge: dict,
-        status_label: str | None = None,
         *,
         image_url: str | None = None,
         public: bool = False,
-    ) -> discord.Embed:
-        status = status_label or {
-            "pending": "대기 중",
-            "processing": "처리 중",
-            "approved": "수락됨",
-            "rejected": "거절됨",
-        }.get(charge.get("status"), str(charge.get("status")))
-        color = 0x2ECC71 if charge.get("status") == "approved" else 0xE5484D if charge.get("status") == "rejected" else 0x5865F2
-        embed = discord.Embed(title="충전 요청", color=color)
-        embed.add_field(name="상태", value=status, inline=True)
-        embed.add_field(name="유저", value=f"<@{charge['user_id']}> (`{charge['user_id']}`)", inline=False)
-        embed.add_field(name="입금자명", value=charge.get("depositor_name") or "-", inline=True)
-        embed.add_field(name="금액", value=f"{int(charge.get('amount', 0)):,}원", inline=True)
-        embed.add_field(
-            name="처리 방식",
-            value="관리자가 수락해야 잔액이 충전됩니다." if charge.get("status") == "pending" else "처리 완료된 요청입니다.",
-            inline=False,
+        title: str = "충전 요청",
+        show_actions: bool = True,
+    ) -> ChargeAdminView:
+        return ChargeAdminView(
+            self,
+            charge,
+            image_url=image_url,
+            public=public,
+            title=title,
+            show_actions=show_actions,
         )
-        if charge.get("processed_by"):
-            label = "승인 관리자" if charge.get("status") == "approved" else "거절 관리자"
-            embed.add_field(name=label, value=f"<@{charge['processed_by']}> (`{charge['processed_by']}`)", inline=False)
-        if charge.get("proof_filename"):
-            embed.add_field(name="입금 사진", value=charge["proof_filename"], inline=True)
-        if charge.get("reject_reason"):
-            embed.add_field(name="거절 사유", value=charge["reject_reason"], inline=False)
-        resolved_image_url = (
-            image_url
-            or charge.get("admin_proof_url")
-            or charge.get("request_proof_url")
-            or charge.get("log_proof_url")
-        )
-        if resolved_image_url:
-            embed.set_image(url=resolved_image_url)
-        if public:
-            embed.set_footer(text="요청 접수 화면입니다. 충전은 관리자 승인 후 반영됩니다.")
-        return embed
 
     async def send_charge_log(self, guild: discord.Guild, charge: dict):
         channel = await self.get_log_channel(guild)
@@ -887,11 +359,19 @@ class VendingArchiveCog(commands.Cog):
         channel = await self.get_log_channel(guild)
         if not channel:
             return None
-        embed = self.build_charge_embed(charge, image_url=image_url)
-        embed.title = "충전 요청 로그"
-        if file is not None:
-            return await channel.send(embed=embed, file=file)
-        return await channel.send(embed=embed)
+        kwargs = {
+            "view": self.build_charge_view(
+                charge,
+                image_url=image_url,
+                title="충전 요청 로그",
+                show_actions=False,
+            ),
+            "allowed_mentions": discord.AllowedMentions.none(),
+        }
+        files = branded_files(file)
+        if files:
+            kwargs["files"] = files
+        return await channel.send(**kwargs)
 
     async def send_purchase_log(self, guild: discord.Guild, log_doc: dict):
         buyer_mention = f"<@{log_doc['user_id']}>"
@@ -943,7 +423,8 @@ class VendingArchiveCog(commands.Cog):
         message_id: int | None,
         image_url: str | None = None,
         public: bool = False,
-        view: discord.ui.View | None = None,
+        title: str = "충전 요청",
+        show_actions: bool = True,
     ):
         if not channel_id or not message_id:
             return
@@ -952,7 +433,26 @@ class VendingArchiveCog(commands.Cog):
             return
         try:
             message = await channel.fetch_message(message_id)
-            await message.edit(embed=self.build_charge_embed(charge, image_url=image_url, public=public), view=view)
+            update = {
+                "content": None,
+                "embeds": [],
+                "view": self.build_charge_view(
+                    charge,
+                    image_url=image_url,
+                    public=public,
+                    title=title,
+                    show_actions=show_actions,
+                ),
+                "allowed_mentions": discord.AllowedMentions.none(),
+            }
+            if not any(
+                attachment.filename == BRAND_LOGO_FILENAME
+                for attachment in message.attachments
+            ):
+                logo_files = branded_files()
+                if logo_files:
+                    update["attachments"] = [*logo_files, *message.attachments]
+            await message.edit(**update)
         except discord.HTTPException:
             return
 
@@ -983,17 +483,19 @@ class VendingArchiveCog(commands.Cog):
                 charge.get("admin_message_id"),
                 charge.get("admin_proof_url"),
                 False,
-                None,
+                "충전 요청",
+                True,
             ),
             (
                 charge.get("log_channel_id"),
                 charge.get("log_message_id"),
                 charge.get("log_proof_url"),
                 False,
-                None,
+                "충전 요청 로그",
+                False,
             ),
         ]
-        for channel_id, message_id, image_url, public, view in targets:
+        for channel_id, message_id, image_url, public, title, show_actions in targets:
             if not channel_id or not message_id:
                 continue
             key = (int(channel_id), int(message_id))
@@ -1007,7 +509,8 @@ class VendingArchiveCog(commands.Cog):
                 message_id=int(message_id),
                 image_url=image_url,
                 public=public,
-                view=view,
+                title=title,
+                show_actions=show_actions,
             )
 
     async def handle_charge_submit(
@@ -1067,12 +570,16 @@ class VendingArchiveCog(commands.Cog):
         )
 
         admin_file = discord.File(io.BytesIO(proof_bytes), filename=proof_filename)
+        admin_files = branded_files(admin_file)
         admin_message = await admin_channel.send(
-            embed=self.build_charge_embed(charge, image_url=attachment_image_url(proof_filename)),
-            view=ChargeAdminView(self),
-            file=admin_file,
+            view=self.build_charge_view(
+                charge,
+                image_url=attachment_image_url(proof_filename),
+            ),
+            files=admin_files,
+            allowed_mentions=discord.AllowedMentions.none(),
         )
-        admin_proof_url = admin_message.attachments[0].url if admin_message.attachments else ""
+        admin_proof_url = message_attachment_url(admin_message, proof_filename)
 
         request_channel = admin_channel
         request_message = admin_message
@@ -1090,7 +597,7 @@ class VendingArchiveCog(commands.Cog):
                     image_url=attachment_image_url(proof_filename),
                     file=log_file,
                 )
-                log_proof_url = log_message.attachments[0].url if log_message and log_message.attachments else ""
+                log_proof_url = message_attachment_url(log_message, proof_filename) if log_message else ""
             except discord.HTTPException:
                 log_message = None
                 log_proof_url = ""
@@ -1122,17 +629,23 @@ class VendingArchiveCog(commands.Cog):
             await interaction.followup.send(embed=error_embed("권한 없음", "관리자 권한이 필요합니다."), ephemeral=True)
             return
 
-        charge = await self.repos.vending.claim_charge_request(
+        result = await self.commerce.approve_charge(
             interaction.guild.id,
             interaction.message.id,
             interaction.user.id,
         )
-        if charge is None:
+        if result.status != "approved" or result.charge is None:
             await interaction.followup.send(embed=error_embed("이미 처리됨", "이미 처리된 충전 요청입니다."), ephemeral=True)
             return
 
-        await self.repos.users.add_cash(interaction.guild.id, charge["user_id"], int(charge["amount"]))
-        charge = await self.repos.vending.approve_charge_request(charge["_id"], interaction.user.id)
+        charge = result.charge
+        if not result.newly_completed:
+            await self.edit_charge_messages(interaction.guild, charge)
+            await interaction.followup.send(
+                embed=success_embed("충전 처리 완료", "이미 안전하게 승인된 요청입니다."),
+                ephemeral=True,
+            )
+            return
         await self.edit_charge_messages(interaction.guild, charge)
         await self.send_charge_log(interaction.guild, charge)
         await self.send_user_dm(
@@ -1243,65 +756,36 @@ class VendingArchiveCog(commands.Cog):
             await interaction.followup.send(embed=error_embed("상품 없음", "해당 상품 ID를 찾을 수 없습니다."), ephemeral=True)
             return
 
-        if await self.repos.vending.owns_product(interaction.guild.id, interaction.user.id, product_id):
+        result = await self.commerce.purchase(
+            interaction.guild.id,
+            interaction.user.id,
+            product,
+        )
+        if result.status == "already_owned":
             await interaction.followup.send(embed=self.build_download_embed(product), ephemeral=True)
             return
-
-        reserved = await self.repos.vending.reserve_product(interaction.guild.id, interaction.user.id, product)
-        if not reserved:
-            if await self.repos.vending.owns_product(interaction.guild.id, interaction.user.id, product_id):
-                await interaction.followup.send(embed=self.build_download_embed(product), ephemeral=True)
-            else:
-                await interaction.followup.send(
-                    embed=error_embed("처리 중", "이미 구매 처리가 진행 중인 상품입니다. 잠시 후 다시 시도해주세요."),
-                    ephemeral=True,
-                )
-            return
-
-        original_price = int(product.get("price", 0))
-        context = f"vending:{normalize_product_id(product_id)}"
-        price, selected_coupon, selected_promotion = await self.repos.coupons.quote(
-            interaction.guild.id, interaction.user.id, context, original_price
-        )
-        spent = await self.repos.users.spend_cash(interaction.guild.id, interaction.user.id, price)
-        if spent is None:
-            await self.repos.vending.release_product_reservation(interaction.guild.id, interaction.user.id, product_id)
-            user = await self.repos.users.ensure_user(interaction.guild.id, interaction.user.id)
+        if result.status == "insufficient_funds":
             await interaction.followup.send(
                 embed=error_embed(
                     "잔액 부족",
-                    f"현재 잔액은 {int(user.get('cash', 0)):,}원이고, 상품 가격은 {price:,}원입니다.",
+                    f"현재 잔액은 {result.current_cash:,}원이고, 상품 가격은 {result.price:,}원입니다.",
                 ),
                 ephemeral=True,
             )
             return
 
-        applied_code = None
-        if selected_coupon:
-            consumed = await self.repos.coupons.consume(
-                interaction.guild.id, interaction.user.id, selected_coupon["code"], "vending", original_price
-            )
-            if consumed: applied_code = selected_coupon["code"]
-        elif selected_promotion:
-            applied_code = selected_promotion["code"]
+        log_doc = result.log
+        spent = result.spent
+        if log_doc is None or spent is None:
+            raise RuntimeError("completed purchase is missing its persisted result")
+        price = result.price
+        original_price = result.original_price
+        applied_code = result.applied_code
 
-        log_doc = await self.repos.vending.record_purchase(
-            guild_id=interaction.guild.id,
-            user_id=interaction.user.id,
-            product=product,
-            before_cash=spent["before_cash"],
-            after_cash=spent["after_cash"],
-        )
-        if applied_code:
-            await self.repos.vending.purchase_logs.update_one(
-                {"_id": log_doc["_id"]}, {"$set": {"price": price, "original_price": original_price, "discount_code": applied_code}}
-            )
-            log_doc["price"] = price
-            log_doc["original_price"] = original_price
-            log_doc["discount_code"] = applied_code
+        if result.newly_completed and applied_code:
             coupon_cog = self.bot.get_cog("CouponCog")
             if coupon_cog is not None:
-                is_promotion = selected_promotion is not None
+                is_promotion = result.discount_kind == "promotion"
                 await coupon_cog.send_coupon_log(
                     interaction.guild,
                     "PROMOTION USED" if is_promotion else "VENDING COUPON USED",
@@ -1313,20 +797,19 @@ class VendingArchiveCog(commands.Cog):
                     할인_금액=f"{original_price - price:,}원",
                     결제_가격=f"{price:,}원",
                 )
-        if product.get("seller_id"):
-            await self.repos.sellers.add_sale(interaction.guild.id, product["seller_id"], price)
 
         purchase_cog = self.bot.get_cog("PurchaseCog")
-        if purchase_cog is not None and isinstance(interaction.user, discord.Member):
+        if result.newly_completed and purchase_cog is not None and isinstance(interaction.user, discord.Member):
             await purchase_cog.upgrade_user_grade(
                 interaction.guild,
                 interaction.user,
                 spent["user"].get("accrued_spent", 0),
             )
 
-        await self.send_purchase_log(interaction.guild, log_doc)
+        if result.newly_completed:
+            await self.send_purchase_log(interaction.guild, log_doc)
         reviews_cog = self.bot.get_cog("ReviewsCog")
-        if reviews_cog is not None:
+        if result.newly_completed and reviews_cog is not None:
             category = None
             if product.get("category_id"):
                 category = await self.repos.product_categories.get(interaction.guild.id, product["category_id"])
@@ -1458,18 +941,24 @@ class VendingArchiveCog(commands.Cog):
 
         product = await self.repos.products.get(interaction.guild.id, archive["product_id"], include_inactive=True)
         description = archive.get("summary") or (product or {}).get("description") or "등록된 요약이 없습니다."
-        embed = info_embed("아카이브 검색 결과", description)
-        embed.add_field(name="검색 URL", value=canonical_url, inline=False)
-        embed.add_field(name="상품 ID", value=f"`{archive['product_id']}`", inline=True)
-        embed.add_field(name="상품 쓰레드", value=self.product_thread_mention(product), inline=True)
-        if product:
-            embed.add_field(name="가격", value=f"{int(product.get('price', 0)):,}원", inline=True)
-
-        await interaction.followup.send(
-            embed=embed,
-            view=ArchiveResultView(self, archive["product_id"], self.product_page_url(interaction.guild.id, product)),
-            ephemeral=True,
+        view = ArchiveResultView(
+            self,
+            archive["product_id"],
+            self.product_page_url(interaction.guild.id, product),
+            product=product,
+            canonical_url=canonical_url,
+            description=description,
+            image_url=f"https://i.ytimg.com/vi/{video_key}/hqdefault.jpg",
         )
+        kwargs = {
+            "view": view,
+            "ephemeral": True,
+            "allowed_mentions": discord.AllowedMentions.none(),
+        }
+        files = branded_files()
+        if files:
+            kwargs["files"] = files
+        await interaction.followup.send(**kwargs)
 
     @tasks.loop(minutes=1)
     async def restore_panel_loop(self):

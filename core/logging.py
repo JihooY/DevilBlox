@@ -57,5 +57,4 @@ def configure_logging(
 
     logging.getLogger("discord").setLevel(discord_level)
     logging.getLogger("discord.http").setLevel(discord_level)
-    logging.getLogger("motor").setLevel("WARNING")
     logging.getLogger("pymongo").setLevel("WARNING")
