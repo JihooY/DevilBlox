@@ -42,7 +42,7 @@ uv run python main.py
 - `LOG_LEVEL`: 봇 로그 레벨입니다. 예: `INFO`, `DEBUG`.
 - `DISCORD_LOG_LEVEL`: Discord 라이브러리 로그 레벨입니다. 보통 `WARNING`을 사용합니다.
 - `SYNC_COMMANDS`: `false`로 두면 슬래시 명령어 동기화를 건너뜁니다.
-- `COGS_PACKAGE`: Cog 자동 탐색에 사용할 import 패키지입니다. 기본값은 `cogs`입니다.
+- `COGS_PACKAGE`: Cog 자동 탐색에 사용할 import 패키지입니다. 기본값은 `cogs`이며, 패키지 안에서 `cogs_`로 시작하는 모듈만 확장으로 로드합니다.
 - `DISABLED_COGS`: 비활성화할 Cog 이름 또는 전체 확장 경로를 쉼표로 적습니다.
 - `MESSAGE_CONTENT_INTENT`: 메시지 내용을 읽어야 할 때만 `true`로 설정합니다.
 

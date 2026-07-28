@@ -3,8 +3,13 @@ from __future__ import annotations
 import importlib
 import pkgutil
 from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
 
-from discord.ext import commands
+if TYPE_CHECKING:
+    from discord.ext import commands
+
+
+COG_MODULE_PREFIX = "cogs_"
 
 
 @dataclass(slots=True)
@@ -53,6 +58,7 @@ def discover_extensions(package_name: str) -> list[str]:
     return sorted(
         module.name
         for module in pkgutil.iter_modules(package_paths, f"{package_name}.")
-        if not module.ispkg and not module.name.rsplit(".", 1)[-1].startswith("_")
+        if not module.ispkg
+        and module.name.rsplit(".", 1)[-1].startswith(COG_MODULE_PREFIX)
     )
 
