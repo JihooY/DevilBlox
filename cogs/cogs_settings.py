@@ -8,7 +8,6 @@ from database.settings import CATEGORY_KEYS, CHANNEL_KEYS, ROLE_KEYS
 from utils.embeds import error_embed, success_embed
 
 ROLE_CHOICES = [app_commands.Choice(name=label, value=key) for key, label in ROLE_KEYS.items()]
-CHANNEL_CHOICES = [app_commands.Choice(name=label, value=key) for key, label in CHANNEL_KEYS.items()]
 CATEGORY_CHOICES = [app_commands.Choice(name=label, value=key) for key, label in CATEGORY_KEYS.items()]
 
 
@@ -46,18 +45,33 @@ class SettingsCog(commands.Cog):
 
     @app_commands.command(name="채널설정", description="봇에서 사용할 채널을 설정합니다.")
     @app_commands.default_permissions(administrator=True)
-    @app_commands.choices(종류=CHANNEL_CHOICES)
     async def set_channel(
         self,
         interaction: discord.Interaction,
-        종류: app_commands.Choice[str],
+        종류: str,
         채널: discord.TextChannel,
     ):
-        await self.settings.set_value(interaction.guild.id, "channels", 종류.value, 채널.id)
+        label = CHANNEL_KEYS.get(종류)
+        if label is None:
+            await interaction.response.send_message(
+                embed=error_embed("종류 오류", "목록에 표시된 채널 종류 중에서 선택해주세요."),
+                ephemeral=True,
+            )
+            return
+        await self.settings.set_value(interaction.guild.id, "channels", 종류, 채널.id)
         await interaction.response.send_message(
-            embed=success_embed("채널 설정 완료", f"{종류.name}: {채널.mention}"),
+            embed=success_embed("채널 설정 완료", f"{label}: {채널.mention}"),
             ephemeral=True,
         )
+
+    @set_channel.autocomplete("종류")
+    async def channel_kind_autocomplete(self, interaction: discord.Interaction, current: str):
+        current_lower = current.casefold()
+        return [
+            app_commands.Choice(name=label, value=key)
+            for key, label in CHANNEL_KEYS.items()
+            if not current_lower or current_lower in label.casefold() or current_lower in key.casefold()
+        ][:25]
 
     @app_commands.command(name="카테고리설정", description="티켓을 만들거나 종료할 때 사용할 카테고리를 설정합니다.")
     @app_commands.default_permissions(administrator=True)
