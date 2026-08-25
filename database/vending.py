@@ -19,6 +19,11 @@ def normalize_product_id(product_id: str) -> str:
     return product_id.strip().casefold()
 
 
+def product_type_of(product: dict) -> str:
+    """A product's sale mode, defaulting existing rows to the original 'standing' behaviour."""
+    return product.get("product_type") or "standing"
+
+
 def category_key(guild_id: int, category_id: str) -> str:
     return f"{guild_id}:{normalize_product_id(category_id)}"
 
@@ -117,12 +122,15 @@ class ProductStore:
         category_id: str = "",
         thread_id: int | None = None,
         page_url: str = "",
+        product_type: str = "standing",
         created_by: int | None = None,
     ):
         now = _now()
         price = int(price)
         if price < 0:
             raise ValueError("product price must be zero or greater")
+        if product_type not in {"standing", "stock"}:
+            raise ValueError("product_type must be 'standing' or 'stock'")
         product_id = product_id.strip()
         product_id_lower = normalize_product_id(product_id)
         category_id = category_id.strip()
@@ -140,6 +148,7 @@ class ProductStore:
             "seller_id": seller_id,
             "thread_id": thread_id,
             "page_url": page_url.strip(),
+            "product_type": product_type,
             "active": True,
             "updated_at": now,
         }
@@ -194,80 +203,95 @@ class ProductStore:
         return result.modified_count > 0
 
 
-class RandomProductStore:
-    """Products that are only obtainable through the random vending draw."""
+class VendingStockUnitStore:
+    """Single-use inventory units for stock-type vending products.
+
+    Each unit holds one buyer's worth of delivered content (an account, a
+    key, a link, ...). A purchase atomically pops one unit so concurrent
+    buyers can never be handed the same unit twice.
+    """
 
     def __init__(self, db):
-        self.collection = db["random_products"]
+        self.collection = db["vending_stock_units"]
 
     async def ensure_indexes(self):
-        await self.collection.create_index([("guild_id", 1), ("product_id_lower", 1)], unique=True)
-        await self.collection.create_index([("guild_id", 1), ("active", 1)])
+        await self.collection.create_index([("guild_id", 1), ("product_id_lower", 1), ("created_at", 1)])
 
-    async def upsert(
+    async def add_many(
         self,
         guild_id: int,
         product_id: str,
+        contents: list[str],
         *,
-        title: str,
-        terabox_url: str,
-        description: str = "",
-        weight: int = 1,
-        seller_id: int | None = None,
         created_by: int | None = None,
-    ):
-        now = _now()
-        weight = max(1, int(weight))
+    ) -> list[dict]:
         product_id = product_id.strip()
         product_id_lower = normalize_product_id(product_id)
-        doc = {
-            "guild_id": guild_id,
-            "product_id": product_id,
-            "product_id_lower": product_id_lower,
-            "title": title.strip() or product_id,
-            "terabox_url": terabox_url.strip(),
-            "description": description.strip(),
-            "weight": weight,
-            "seller_id": seller_id,
-            "active": True,
-            "updated_at": now,
-        }
-        if created_by is not None:
-            doc["updated_by"] = created_by
-
-        await self.collection.update_one(
-            {"_id": product_key(guild_id, product_id)},
+        now = _now()
+        docs = [
             {
-                "$set": doc,
-                "$setOnInsert": {
-                    "_id": product_key(guild_id, product_id),
-                    "created_by": created_by,
-                    "created_at": now,
-                },
-            },
-            upsert=True,
-        )
-        return await self.get(guild_id, product_id, include_inactive=True)
+                "guild_id": guild_id,
+                "product_id": product_id,
+                "product_id_lower": product_id_lower,
+                "content": content,
+                "created_by": created_by,
+                "created_at": now,
+            }
+            for content in contents
+            if content.strip()
+        ]
+        if not docs:
+            return []
+        result = await self.collection.insert_many(docs)
+        for doc, inserted_id in zip(docs, result.inserted_ids):
+            doc["_id"] = inserted_id
+        return docs
 
-    async def get(self, guild_id: int, product_id: str, *, include_inactive: bool = False):
-        query = {"_id": product_key(guild_id, product_id)}
-        if not include_inactive:
-            query["active"] = True
-        return await self.collection.find_one(query)
-
-    async def list_active(self, guild_id: int, limit: int | None = None):
-        return (
-            await self.collection.find({"guild_id": guild_id, "active": True})
-            .sort([("title", 1), ("product_id", 1)])
-            .to_list(length=limit)
+    async def count(self, guild_id: int, product_id: str) -> int:
+        return await self.collection.count_documents(
+            {"guild_id": guild_id, "product_id_lower": normalize_product_id(product_id)}
         )
 
-    async def deactivate(self, guild_id: int, product_id: str, deleted_by: int | None = None) -> bool:
-        result = await self.collection.update_one(
-            {"_id": product_key(guild_id, product_id), "active": True},
-            {"$set": {"active": False, "deleted_by": deleted_by, "updated_at": _now()}},
+    async def count_for_products(self, guild_id: int, product_ids_lower: list[str]) -> dict[str, int]:
+        if not product_ids_lower:
+            return {}
+        counts: dict[str, int] = {}
+        cursor = self.collection.aggregate(
+            [
+                {"$match": {"guild_id": guild_id, "product_id_lower": {"$in": product_ids_lower}}},
+                {"$group": {"_id": "$product_id_lower", "count": {"$sum": 1}}},
+            ]
         )
-        return result.modified_count > 0
+        async for row in cursor:
+            counts[row["_id"]] = row["count"]
+        return counts
+
+    async def take_random(self, guild_id: int, product_id: str) -> dict | None:
+        """Atomically remove and return one random unit, or None if the pool is empty.
+
+        ``$sample`` picks the unit, then ``find_one_and_delete`` on its exact
+        ``_id`` removes it -- that delete is the atomic step, so two
+        concurrent buyers can never walk away with the same unit. If two
+        buyers happen to sample the same unit, the loser's delete returns
+        ``None`` and simply resamples from what's left.
+        """
+        query = {"guild_id": guild_id, "product_id_lower": normalize_product_id(product_id)}
+        for _ in range(8):
+            sampled = await self.collection.aggregate(
+                [{"$match": query}, {"$sample": {"size": 1}}]
+            ).to_list(length=1)
+            if not sampled:
+                return None
+            deleted = await self.collection.find_one_and_delete({"_id": sampled[0]["_id"]})
+            if deleted is not None:
+                return deleted
+        return None
+
+    async def clear(self, guild_id: int, product_id: str) -> int:
+        result = await self.collection.delete_many(
+            {"guild_id": guild_id, "product_id_lower": normalize_product_id(product_id)}
+        )
+        return result.deleted_count
 
 
 class ArchiveStore:
@@ -481,7 +505,6 @@ class VendingLogStore:
         before_cash: int,
         after_cash: int,
         discount_code: str | None = None,
-        kind: str = "purchase",
     ):
         price = int(price)
         original_price = int(original_price)
@@ -507,7 +530,6 @@ class VendingLogStore:
             "before_cash": int(before_cash),
             "after_cash": int(after_cash),
             "seller_id": product.get("seller_id"),
-            "kind": kind,
             "purchased_at": now,
         }
         if discount_code:
@@ -563,54 +585,6 @@ class VendingLogStore:
         if entitlement and entitlement.get("status") == "purchased":
             return entitlement, False
         raise RuntimeError("purchase entitlement could not be completed")
-
-    async def grant_owned_product(
-        self,
-        guild_id: int,
-        user_id: int,
-        product: dict,
-        *,
-        operation_id: str,
-    ) -> dict:
-        """Directly grant a purchased entitlement, e.g. after a random draw.
-
-        Unlike :meth:`reserve_product`/:meth:`complete_product_purchase`, this
-        skips the pending-reservation dance: the caller has already charged a
-        fixed draw price up front, so a duplicate draw of the same item should
-        simply refresh the entitlement instead of racing a unique-index error.
-        """
-        now = _now()
-        product_id = product["product_id"]
-        product_id_lower = normalize_product_id(product_id)
-        await self.user_products.update_one(
-            {
-                "guild_id": guild_id,
-                "user_id": user_id,
-                "product_id_lower": product_id_lower,
-            },
-            {
-                "$set": {
-                    "product_id": product_id,
-                    "title": product.get("title", product_id),
-                    "terabox_url": product.get("terabox_url", ""),
-                    "status": "purchased",
-                    "purchased_at": now,
-                    "updated_at": now,
-                },
-                "$setOnInsert": {
-                    "operation_id": operation_id,
-                    "reserved_at": now,
-                },
-            },
-            upsert=True,
-        )
-        return await self.user_products.find_one(
-            {
-                "guild_id": guild_id,
-                "user_id": user_id,
-                "product_id_lower": product_id_lower,
-            }
-        )
 
     async def reserve_product(
         self,

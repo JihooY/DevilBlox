@@ -10,8 +10,8 @@ from .vending import (
     ArchiveStore,
     ProductCategoryStore,
     ProductStore,
-    RandomProductStore,
     VendingLogStore,
+    VendingStockUnitStore,
 )
 from .warnings import WarningStore
 
@@ -27,9 +27,9 @@ class Repositories:
         self.lottery = LotteryStore(db)
         self.product_categories = ProductCategoryStore(db)
         self.products = ProductStore(db)
-        self.random_products = RandomProductStore(db)
         self.archives = ArchiveStore(db)
         self.vending = VendingLogStore(db)
+        self.vending_stock = VendingStockUnitStore(db)
         self.stock = StockStore(db)
         self.reviews = ReviewStore(db)
         self.warnings = WarningStore(db)
@@ -46,9 +46,9 @@ class Repositories:
             self.lottery,
             self.product_categories,
             self.products,
-            self.random_products,
             self.archives,
             self.vending,
+            self.vending_stock,
             self.stock,
             self.reviews,
             self.warnings,

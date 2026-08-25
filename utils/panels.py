@@ -32,6 +32,7 @@ PANEL_LOCATIONS = (
     ("support", "support_panel_message_id"),
     ("ticket_condition", "ticket_condition_message_id"),
     ("vending", "vending_panel_message_id"),
+    ("vending_stock", "vending_stock_panel_message_id"),
     ("verify", "verify_panel_message_id"),
 )
 

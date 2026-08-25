@@ -1,11 +1,10 @@
 from __future__ import annotations
 
-import random
 from dataclasses import dataclass
 from typing import Literal
 from uuid import uuid4
 
-from database.vending import normalize_product_id
+from database.vending import normalize_product_id, product_type_of
 
 
 @dataclass(slots=True)
@@ -18,7 +17,7 @@ class ChargeApprovalResult:
 
 @dataclass(slots=True)
 class PurchaseResult:
-    status: Literal["purchased", "already_owned", "insufficient_funds"]
+    status: Literal["purchased", "already_owned", "insufficient_funds", "out_of_stock"]
     product: dict
     operation_id: str | None = None
     price: int = 0
@@ -29,15 +28,7 @@ class PurchaseResult:
     log: dict | None = None
     newly_completed: bool = False
     current_cash: int = 0
-
-
-@dataclass(slots=True)
-class RandomPurchaseResult:
-    status: Literal["purchased", "insufficient_funds", "empty_pool"]
-    product: dict | None = None
-    price: int = 0
-    log: dict | None = None
-    current_cash: int = 0
+    stock_unit: dict | None = None
 
 
 class VendingCommerceService:
@@ -116,6 +107,9 @@ class VendingCommerceService:
         original_price = int(product.get("price", 0))
         if original_price < 0:
             raise ValueError("product price must be zero or greater")
+
+        if product_type_of(product) == "stock":
+            return await self._purchase_stock(guild_id, user_id, product, original_price)
 
         product_id = str(product["product_id"])
         context = f"vending:{normalize_product_id(product_id)}"
@@ -264,47 +258,112 @@ class VendingCommerceService:
             current_cash=int(spent["after_cash"]),
         )
 
-    async def random_purchase(
+    async def _purchase_stock(
         self,
         guild_id: int,
         user_id: int,
-        pool: list[dict],
-        price: int,
-        *,
-        source: str,
-    ) -> RandomPurchaseResult:
-        """Charge a fixed draw price once and hand back one random product.
+        product: dict,
+        original_price: int,
+    ) -> PurchaseResult:
+        """Charge for one unit of a stock product and pop it from inventory.
 
-        The draw price is independent of any individual product's own price,
-        so unlike :meth:`purchase` this never touches coupons/promotions and
-        never blocks on the buyer already owning the drawn item -- duplicate
-        draws are expected gacha behaviour, not an error.
+        Stock products are quantity-based -- a buyer may legitimately buy the
+        same product repeatedly to pick up several units -- so this can't
+        reuse :meth:`purchase`'s single-reservation-per-product idempotency
+        keying. Each attempt gets its own operation ID instead.
         """
-        if not pool:
-            return RandomPurchaseResult(status="empty_pool")
+        product_id = str(product["product_id"])
+        context = f"vending:{normalize_product_id(product_id)}"
+        quoted_price, selected_coupon, selected_promotion = await self.repos.coupons.quote(
+            guild_id,
+            user_id,
+            context,
+            original_price,
+        )
 
-        price = int(price)
-        if price <= 0:
-            raise ValueError("random draw price must be greater than zero")
+        operation_id = f"stock_purchase:{uuid4().hex}"
+        price = original_price
+        applied_code: str | None = None
+        discount_kind: Literal["coupon", "promotion"] | None = None
+        coupon_code = (selected_coupon or {}).get("code")
+        promotion_code = (selected_promotion or {}).get("code")
+        coupon_consumed = False
 
-        operation_id = f"random:{source}:{uuid4().hex}"
+        if coupon_code:
+            consumed = await self.repos.coupons.consume_once(
+                guild_id,
+                user_id,
+                str(coupon_code),
+                "vending",
+                original_price,
+                operation_id=operation_id,
+            )
+            if consumed is not None:
+                _, price = consumed
+                coupon_consumed = True
+                applied_code = str(coupon_code)
+                discount_kind = "coupon"
+        elif promotion_code:
+            promotion = await self.repos.coupons.validate_promotion(
+                guild_id,
+                user_id,
+                str(promotion_code),
+            )
+            if promotion is not None:
+                price = quoted_price
+                applied_code = str(promotion_code)
+                discount_kind = "promotion"
+
         spent = await self.repos.users.spend_cash_once(
             guild_id,
             user_id,
             price,
             operation_id=operation_id,
-            reason=f"vending random draw ({source})",
+            reason=f"vending stock purchase {product_id}",
         )
         if spent is None:
+            if coupon_consumed and coupon_code:
+                await self.repos.coupons.restore_consumption_once(
+                    guild_id,
+                    user_id,
+                    str(coupon_code),
+                    operation_id=operation_id,
+                )
             user = await self.repos.users.ensure_user(guild_id, user_id)
-            return RandomPurchaseResult(
+            return PurchaseResult(
                 status="insufficient_funds",
+                product=product,
+                operation_id=operation_id,
                 price=price,
+                original_price=original_price,
                 current_cash=int(user.get("cash", 0)),
             )
 
-        weights = [max(1, int(entry.get("weight", 1))) for entry in pool]
-        product = random.choices(pool, weights=weights, k=1)[0]
+        unit = await self.repos.vending_stock.take_random(guild_id, product_id)
+        if unit is None:
+            # Payment already went through but the pool ran dry underneath us
+            # (a concurrent buyer or an admin clearing stock); refund at once.
+            await self.repos.users.add_cash_once(
+                guild_id,
+                user_id,
+                price,
+                operation_id=f"stock_refund:{operation_id}",
+                reason=f"vending stock refund (out of stock) {product_id}",
+            )
+            if coupon_consumed and coupon_code:
+                await self.repos.coupons.restore_consumption_once(
+                    guild_id,
+                    user_id,
+                    str(coupon_code),
+                    operation_id=operation_id,
+                )
+            return PurchaseResult(
+                status="out_of_stock",
+                product=product,
+                operation_id=operation_id,
+                price=price,
+                original_price=original_price,
+            )
 
         log = await self.repos.vending.upsert_purchase_log(
             operation_id=operation_id,
@@ -312,16 +371,10 @@ class VendingCommerceService:
             user_id=user_id,
             product=product,
             price=price,
-            original_price=price,
+            original_price=original_price,
             before_cash=spent["before_cash"],
             after_cash=spent["after_cash"],
-            kind=f"random_{source}",
-        )
-        await self.repos.vending.grant_owned_product(
-            guild_id,
-            user_id,
-            product,
-            operation_id=operation_id,
+            discount_code=applied_code,
         )
         seller_id = product.get("seller_id")
         if seller_id:
@@ -334,10 +387,17 @@ class VendingCommerceService:
             if not seller_recorded:
                 raise RuntimeError("seller sale could not be recorded")
 
-        return RandomPurchaseResult(
+        return PurchaseResult(
             status="purchased",
             product=product,
+            operation_id=operation_id,
             price=price,
+            original_price=original_price,
+            applied_code=applied_code,
+            discount_kind=discount_kind,
+            spent=spent,
             log=log,
+            newly_completed=True,
             current_cash=int(spent["after_cash"]),
+            stock_unit=unit,
         )

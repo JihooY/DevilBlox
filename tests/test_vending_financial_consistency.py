@@ -429,7 +429,6 @@ class _CommerceVending:
         before_cash,
         after_cash,
         discount_code=None,
-        kind=None,
     ):
         async with self._lock:
             if operation_id not in self.purchase_logs:
@@ -447,28 +446,11 @@ class _CommerceVending:
                     "before_cash": before_cash,
                     "after_cash": after_cash,
                     "discount_code": discount_code,
-                    "kind": kind,
                 }
                 if self.fail_log_after_commit:
                     self.fail_log_after_commit -= 1
                     raise RuntimeError("ambiguous purchase log result")
             return deepcopy(self.purchase_logs[operation_id])
-
-    async def grant_owned_product(self, guild_id, user_id, product, *, operation_id):
-        key = (guild_id, user_id, product["product_id_lower"])
-        async with self._lock:
-            entitlement = {
-                "guild_id": guild_id,
-                "user_id": user_id,
-                "product_id": product["product_id"],
-                "product_id_lower": product["product_id_lower"],
-                "title": product.get("title", product["product_id"]),
-                "terabox_url": product.get("terabox_url", ""),
-                "status": "purchased",
-                "operation_id": operation_id,
-            }
-            self.entitlements[key] = entitlement
-            return deepcopy(entitlement)
 
     async def complete_product_purchase(
         self, *, operation_id, guild_id, user_id, product
@@ -517,11 +499,25 @@ class _CommerceSellers:
             return True
 
 
-def _commerce_repos(*, cash=2_000, coupon_quantity=0, charge_amount=500):
+class _CommerceVendingStock:
+    def __init__(self, contents: list[str] | None = None):
+        self.units: list[dict] = [{"content": content} for content in (contents or [])]
+        self.taken: list[dict] = []
+
+    async def take_random(self, _guild_id, _product_id):
+        if not self.units:
+            return None
+        unit = self.units.pop(0)
+        self.taken.append(unit)
+        return unit
+
+
+def _commerce_repos(*, cash=2_000, coupon_quantity=0, charge_amount=500, stock_contents=None):
     return SimpleNamespace(
         users=_CommerceUsers(cash=cash),
         coupons=_CommerceCoupons(quantity=coupon_quantity),
         vending=_CommerceVending(charge_amount=charge_amount),
+        vending_stock=_CommerceVendingStock(stock_contents),
         sellers=_CommerceSellers(),
     )
 
@@ -991,100 +987,72 @@ class PurchaseServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(repos.vending.purchase_logs)
 
 
-class RandomPurchaseServiceTests(unittest.IsolatedAsyncioTestCase):
+class StockPurchaseServiceTests(unittest.IsolatedAsyncioTestCase):
     @staticmethod
-    def product(product_id="prize-a", *, seller_id=None, weight=1):
+    def product(product_id="stock-a", *, price=300, seller_id=None):
         product = {
             "product_id": product_id,
             "product_id_lower": product_id.casefold(),
             "title": product_id,
-            "terabox_url": "https://example.test/file",
-            "weight": weight,
+            "price": price,
+            "product_type": "stock",
         }
         if seller_id is not None:
             product["seller_id"] = seller_id
         return product
 
-    async def test_empty_pool_is_rejected_without_charging(self):
-        repos = _commerce_repos(cash=1_000)
-        service = VendingCommerceService(repos)
-
-        result = await service.random_purchase(1, 2, [], 300, source="exclusive")
-
-        self.assertEqual(result.status, "empty_pool")
-        self.assertEqual(repos.users.cash, 1_000)
-        self.assertFalse(repos.users.operations)
-        self.assertFalse(repos.vending.purchase_logs)
-
-    async def test_non_positive_price_is_rejected_before_any_side_effect(self):
-        repos = _commerce_repos(cash=1_000)
-        service = VendingCommerceService(repos)
-
-        with self.assertRaises(ValueError):
-            await service.random_purchase(1, 2, [self.product()], 0, source="catalog")
-
-        self.assertEqual(repos.users.cash, 1_000)
-        self.assertFalse(repos.users.operations)
-
-    async def test_insufficient_funds_does_not_grant_a_product(self):
-        repos = _commerce_repos(cash=100)
-        service = VendingCommerceService(repos)
-
-        result = await service.random_purchase(1, 2, [self.product()], 300, source="catalog")
-
-        self.assertEqual(result.status, "insufficient_funds")
-        self.assertEqual(result.current_cash, 100)
-        self.assertEqual(repos.users.cash, 100)
-        self.assertFalse(repos.users.operations)
-        self.assertFalse(repos.vending.entitlements)
-        self.assertFalse(repos.vending.purchase_logs)
-
-    async def test_successful_draw_charges_the_fixed_price_and_grants_the_product(self):
-        repos = _commerce_repos(cash=1_000)
+    async def test_stock_purchase_charges_price_and_returns_the_popped_unit(self):
+        repos = _commerce_repos(cash=1_000, stock_contents=["id:pw"])
         service = VendingCommerceService(repos)
         product = self.product(seller_id=30)
 
-        result = await service.random_purchase(1, 2, [product], 300, source="exclusive")
+        result = await service.purchase(1, 2, product)
 
         self.assertEqual(result.status, "purchased")
         self.assertEqual(result.price, 300)
-        self.assertEqual(result.product["product_id"], "prize-a")
+        self.assertEqual(result.stock_unit, {"content": "id:pw"})
         self.assertEqual(repos.users.cash, 700)
         self.assertEqual(len(repos.users.operations), 1)
         self.assertEqual(len(repos.vending.purchase_logs), 1)
-        log = next(iter(repos.vending.purchase_logs.values()))
-        self.assertEqual(log["kind"], "random_exclusive")
-        self.assertEqual(log["price"], 300)
-        entitlement = repos.vending.entitlements[(1, 2, "prize-a")]
-        self.assertEqual(entitlement["status"], "purchased")
         self.assertEqual(repos.sellers.total, 300)
+        self.assertFalse(repos.vending.entitlements)
 
-    async def test_drawing_an_already_owned_prize_still_charges_and_does_not_crash(self):
-        repos = _commerce_repos(cash=1_000)
+    async def test_insufficient_funds_does_not_take_a_unit(self):
+        repos = _commerce_repos(cash=100, stock_contents=["id:pw"])
+        service = VendingCommerceService(repos)
+
+        result = await service.purchase(1, 2, self.product())
+
+        self.assertEqual(result.status, "insufficient_funds")
+        self.assertEqual(repos.users.cash, 100)
+        self.assertFalse(repos.users.operations)
+        self.assertEqual(len(repos.vending_stock.units), 1)
+        self.assertFalse(repos.vending_stock.taken)
+
+    async def test_out_of_stock_refunds_the_charge(self):
+        repos = _commerce_repos(cash=1_000, stock_contents=[])
+        service = VendingCommerceService(repos)
+
+        result = await service.purchase(1, 2, self.product())
+
+        self.assertEqual(result.status, "out_of_stock")
+        self.assertEqual(repos.users.cash, 1_000)
+        self.assertFalse(repos.vending.purchase_logs)
+
+    async def test_repeated_purchases_of_the_same_stock_product_each_charge_and_pop_a_unit(self):
+        repos = _commerce_repos(cash=1_000, stock_contents=["a", "b"])
         service = VendingCommerceService(repos)
         product = self.product()
 
-        first = await service.random_purchase(1, 2, [product], 300, source="catalog")
-        second = await service.random_purchase(1, 2, [product], 300, source="catalog")
+        first = await service.purchase(1, 2, product)
+        second = await service.purchase(1, 2, product)
 
         self.assertEqual(first.status, "purchased")
         self.assertEqual(second.status, "purchased")
+        self.assertEqual({first.stock_unit["content"], second.stock_unit["content"]}, {"a", "b"})
         self.assertEqual(repos.users.cash, 400)
         self.assertEqual(len(repos.users.operations), 2)
         self.assertEqual(len(repos.vending.purchase_logs), 2)
-        self.assertEqual(len(repos.vending.entitlements), 1)
-
-    async def test_draw_only_ever_selects_from_the_given_pool(self):
-        repos = _commerce_repos(cash=10_000)
-        service = VendingCommerceService(repos)
-        pool = [self.product("a"), self.product("b"), self.product("c")]
-
-        drawn_ids = set()
-        for _ in range(20):
-            result = await service.random_purchase(1, 2, pool, 100, source="catalog")
-            drawn_ids.add(result.product["product_id"])
-
-        self.assertTrue(drawn_ids.issubset({"a", "b", "c"}))
 
 
 if __name__ == "__main__":

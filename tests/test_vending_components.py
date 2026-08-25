@@ -13,9 +13,11 @@ from cogs.cogs_vending_archive import (
 from cogs.vending_views import (
     ArchiveResultView,
     ChargeAdminView,
+    ProductDetailView,
     ProductPurchaseModal,
-    RandomMenuView,
+    ProductSelect,
     VendingPanelView,
+    VendingStockPanelView,
 )
 
 
@@ -58,22 +60,64 @@ class VendingComponentLayoutTests(unittest.TestCase):
             4,
         )
         buttons = view_buttons(view)
-        self.assertEqual(len(buttons), 5)
-        self.assertEqual(buttons[-1].custom_id, "devilblox:vending:random")
-        self.assertEqual(buttons[-1].label, "랜덤뽑기")
+        self.assertEqual(len(buttons), 4)
 
-    def test_random_menu_shows_prices_and_disables_undraws_without_a_price(self) -> None:
-        view = RandomMenuView(SimpleNamespace(), 500, None)
+    def test_product_select_shows_stock_count_for_stock_products_only(self) -> None:
+        products = [
+            {
+                "product_id": "standing-a",
+                "product_id_lower": "standing-a",
+                "title": "상시 상품",
+                "price": 1_000,
+                "product_type": "standing",
+            },
+            {
+                "product_id": "stock-a",
+                "product_id_lower": "stock-a",
+                "title": "재고 상품",
+                "price": 2_000,
+                "product_type": "stock",
+            },
+        ]
 
-        text = view_text(view)
-        self.assertIn("500원", text)
-        self.assertIn("미설정", text)
-        buttons = view_buttons(view)
-        self.assertEqual(len(buttons), 2)
-        catalog_button = next(button for button in buttons if button.label == "카탈로그 랜덤")
-        exclusive_button = next(button for button in buttons if button.label == "전용 랜덤")
-        self.assertFalse(catalog_button.disabled)
-        self.assertTrue(exclusive_button.disabled)
+        select = ProductSelect(SimpleNamespace(), products, "buy", stock_counts={"stock-a": 3})
+
+        standing_option = next(option for option in select.options if option.value == "standing-a")
+        stock_option = next(option for option in select.options if option.value == "stock-a")
+        self.assertNotIn("재고", standing_option.description)
+        self.assertIn("재고 3개", stock_option.description)
+
+    def test_product_detail_marks_stock_product_sold_out(self) -> None:
+        cog = SimpleNamespace(
+            product_thread_mention=lambda product: "`미설정`",
+            product_page_url=lambda guild_id, product: None,
+        )
+        product = {
+            "guild_id": 1,
+            "product_id": "stock-a",
+            "title": "재고 상품",
+            "price": 2_000,
+            "product_type": "stock",
+        }
+
+        view = ProductDetailView(cog, product, stock_count=0)
+
+        buy_button = next(button for button in view_buttons(view) if button.label in {"구매하기", "품절"})
+        self.assertEqual(buy_button.label, "품절")
+        self.assertTrue(buy_button.disabled)
+        self.assertIn("품절", view_text(view))
+
+    def test_stock_panel_lists_products_with_counts_and_management_buttons(self) -> None:
+        products = [
+            {"product_id": "stock-a", "product_id_lower": "stock-a", "title": "재고 상품"},
+        ]
+
+        view = VendingStockPanelView(SimpleNamespace(), products, {"stock-a": 4})
+
+        self.assertIn("재고형 상품 `1`개", view_text(view))
+        self.assertIn("`4개`", view_text(view))
+        button_labels = {button.label for button in view_buttons(view)}
+        self.assertEqual(button_labels, {"재고 추가", "전체 삭제", "새로고침"})
 
     def test_pending_charge_is_one_persistent_interactive_container(self) -> None:
         charge = {
@@ -189,102 +233,77 @@ class VendingComponentCallbackTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsInstance(modal, ProductPurchaseModal)
         self.assertEqual(str(modal.product_id.default), "product-1")
 
-    async def test_panel_random_button_opens_random_menu(self) -> None:
-        cog = SimpleNamespace(handle_random_menu=AsyncMock())
-        view = VendingPanelView(cog)
-        random_button = next(
-            button for button in view_buttons(view) if button.custom_id == "devilblox:vending:random"
-        )
-        interaction = SimpleNamespace()
-
-        await random_button.callback(interaction)
-
-        cog.handle_random_menu.assert_awaited_once_with(interaction)
-
-    async def test_random_menu_buttons_trigger_the_matching_draw_source(self) -> None:
-        cog = SimpleNamespace(handle_random_draw=AsyncMock())
-        view = RandomMenuView(cog, 500, 700)
-        catalog_button = next(button for button in view_buttons(view) if button.label == "카탈로그 랜덤")
-        exclusive_button = next(button for button in view_buttons(view) if button.label == "전용 랜덤")
-        interaction = SimpleNamespace()
-
-        await catalog_button.callback(interaction)
-        await exclusive_button.callback(interaction)
-
-        cog.handle_random_draw.assert_any_await(interaction, "catalog")
-        cog.handle_random_draw.assert_any_await(interaction, "exclusive")
-
-    async def test_random_menu_reads_configured_prices(self) -> None:
-        repos = SimpleNamespace(settings=SimpleNamespace(get_value=AsyncMock(side_effect=[500, None])))
+    async def test_stock_purchase_delivers_unit_by_dm(self) -> None:
         cog = object.__new__(VendingArchiveCog)
-        cog.bot = SimpleNamespace(repos=repos)
+        product = {"product_id": "stock-a", "title": "재고 상품", "product_type": "stock"}
+        unit = {"content": "id:pw"}
+        sent_dm = AsyncMock()
+        interaction = SimpleNamespace(user=SimpleNamespace(send=sent_dm))
+
+        embed = await cog.deliver_stock_unit(interaction, product, unit)
+
+        sent_dm.assert_awaited_once()
+        dm_embed = sent_dm.await_args.kwargs["embed"]
+        self.assertIn("id:pw", dm_embed.fields[0].value)
+        self.assertIn("재고 상품", embed.description)
+
+    async def test_stock_purchase_falls_back_to_ephemeral_reply_when_dm_fails(self) -> None:
+        cog = object.__new__(VendingArchiveCog)
+        product = {"product_id": "stock-a", "title": "재고 상품", "product_type": "stock"}
+        unit = {"content": "id:pw"}
         interaction = SimpleNamespace(
-            guild=SimpleNamespace(id=1),
-            response=SimpleNamespace(defer=AsyncMock()),
-            followup=SimpleNamespace(send=AsyncMock()),
-        )
-
-        with patch("cogs.cogs_vending_archive.branded_files", return_value=[]):
-            await cog.handle_random_menu(interaction)
-
-        kwargs = interaction.followup.send.await_args.kwargs
-        self.assertIsInstance(kwargs["view"], RandomMenuView)
-        text = view_text(kwargs["view"])
-        self.assertIn("500원", text)
-        self.assertIn("미설정", text)
-
-    async def test_random_draw_requires_a_configured_price(self) -> None:
-        repos = SimpleNamespace(settings=SimpleNamespace(get_value=AsyncMock(return_value=None)))
-        cog = object.__new__(VendingArchiveCog)
-        cog.bot = SimpleNamespace(repos=repos)
-        interaction = SimpleNamespace(
-            guild=SimpleNamespace(id=1),
-            response=SimpleNamespace(defer=AsyncMock()),
-            followup=SimpleNamespace(send=AsyncMock()),
-        )
-
-        await cog.handle_random_draw(interaction, "exclusive")
-
-        kwargs = interaction.followup.send.await_args.kwargs
-        self.assertIn("가격 미설정", kwargs["embed"].title)
-
-    async def test_random_draw_success_sends_result_and_purchase_log(self) -> None:
-        product = {
-            "product_id": "prize-a",
-            "title": "프라이즈",
-            "terabox_url": "https://example.test/file",
-        }
-        repos = SimpleNamespace(
-            settings=SimpleNamespace(get_value=AsyncMock(return_value=300)),
-            random_products=SimpleNamespace(list_active=AsyncMock(return_value=[product])),
-        )
-        cog = object.__new__(VendingArchiveCog)
-        cog.bot = SimpleNamespace(repos=repos)
-        cog.commerce = SimpleNamespace(
-            random_purchase=AsyncMock(
-                return_value=SimpleNamespace(
-                    status="purchased",
-                    product=product,
-                    price=300,
-                    log={"product_id": "prize-a"},
-                    current_cash=700,
+            user=SimpleNamespace(
+                send=AsyncMock(
+                    side_effect=discord.HTTPException(SimpleNamespace(status=403, reason="Forbidden"), "blocked")
                 )
             )
         )
-        cog.send_purchase_log = AsyncMock()
+
+        embed = await cog.deliver_stock_unit(interaction, product, unit)
+
+        self.assertIn("DM을 보낼 수 없어", embed.description)
+        self.assertIn("id:pw", embed.fields[0].value)
+
+    async def test_stock_add_submit_requires_a_stock_type_product(self) -> None:
+        repos = SimpleNamespace(products=SimpleNamespace(get=AsyncMock(return_value={"product_id": "standing-a", "product_type": "standing"})))
+        cog = object.__new__(VendingArchiveCog)
+        cog.bot = SimpleNamespace(repos=repos)
+        cog.staff_allowed = AsyncMock(return_value=True)
         interaction = SimpleNamespace(
             guild=SimpleNamespace(id=1),
-            user=SimpleNamespace(id=2),
             response=SimpleNamespace(defer=AsyncMock()),
             followup=SimpleNamespace(send=AsyncMock()),
         )
 
-        await cog.handle_random_draw(interaction, "exclusive")
+        await cog.handle_stock_add_submit(interaction, "standing-a", "id:pw")
 
-        cog.commerce.random_purchase.assert_awaited_once_with(1, 2, [product], 300, source="exclusive")
-        cog.send_purchase_log.assert_awaited_once_with(interaction.guild, {"product_id": "prize-a"})
         kwargs = interaction.followup.send.await_args.kwargs
-        self.assertIn("프라이즈", kwargs["embed"].description or "")
+        self.assertIn("상품 없음", kwargs["embed"].title)
+
+    async def test_stock_add_submit_splits_lines_and_refreshes_panel(self) -> None:
+        product = {"product_id": "stock-a", "product_type": "stock"}
+        added_units = [{"content": "a"}, {"content": "b"}]
+        repos = SimpleNamespace(
+            products=SimpleNamespace(get=AsyncMock(return_value=product)),
+            vending_stock=SimpleNamespace(add_many=AsyncMock(return_value=added_units)),
+        )
+        cog = object.__new__(VendingArchiveCog)
+        cog.bot = SimpleNamespace(repos=repos)
+        cog.staff_allowed = AsyncMock(return_value=True)
+        cog.update_stock_panel_message = AsyncMock()
+        interaction = SimpleNamespace(
+            guild=SimpleNamespace(id=1),
+            user=SimpleNamespace(id=99),
+            response=SimpleNamespace(defer=AsyncMock()),
+            followup=SimpleNamespace(send=AsyncMock()),
+        )
+
+        await cog.handle_stock_add_submit(interaction, "stock-a", "a\n\nb\n")
+
+        repos.vending_stock.add_many.assert_awaited_once_with(1, "stock-a", ["a", "b"], created_by=99)
+        cog.update_stock_panel_message.assert_awaited_once_with(interaction, "stock-a")
+        kwargs = interaction.followup.send.await_args.kwargs
+        self.assertIn("2개", kwargs["embed"].description)
 
     async def test_charge_edit_migrates_embed_and_retains_existing_proof(self) -> None:
         cog = object.__new__(VendingArchiveCog)

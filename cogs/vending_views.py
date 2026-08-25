@@ -323,16 +323,7 @@ class VendingPanelView(discord.ui.LayoutView):
             custom_id="devilblox:vending:download",
         )
         download_button.callback = self.download
-
-        random_button = discord.ui.Button(
-            label="랜덤뽑기",
-            style=discord.ButtonStyle.primary,
-            custom_id="devilblox:vending:random",
-        )
-        random_button.callback = self.random
-        container.add_item(
-            discord.ui.ActionRow(charge_button, catalog_button, buy_button, download_button, random_button)
-        )
+        container.add_item(discord.ui.ActionRow(charge_button, catalog_button, buy_button, download_button))
 
         self.add_item(container)
 
@@ -347,49 +338,6 @@ class VendingPanelView(discord.ui.LayoutView):
 
     async def download(self, interaction: discord.Interaction):
         await self.cog.handle_download_menu(interaction)
-
-    async def random(self, interaction: discord.Interaction):
-        await self.cog.handle_random_menu(interaction)
-
-
-def random_price_label(price: int | None) -> str:
-    return f"{int(price):,}원" if price else "미설정"
-
-
-class RandomDrawButton(discord.ui.Button):
-    def __init__(self, cog: VendingArchiveCog, source: str, price: int | None):
-        super().__init__(
-            label="카탈로그 랜덤" if source == "catalog" else "전용 랜덤",
-            style=discord.ButtonStyle.success,
-            disabled=not price,
-        )
-        self.cog = cog
-        self.source = source
-
-    async def callback(self, interaction: discord.Interaction):
-        await self.cog.handle_random_draw(interaction, self.source)
-
-
-class RandomMenuView(discord.ui.LayoutView):
-    def __init__(self, cog: VendingArchiveCog, catalog_price: int | None, exclusive_price: int | None):
-        super().__init__(timeout=180)
-        lines = [
-            "## 랜덤뽑기",
-            "카탈로그 랜덤은 선택 구매 가능한 상품 중에서, 전용 랜덤은 랜덤으로만 뽑을 수 있는 상품 중에서 하나를 뽑습니다.",
-            "",
-            f"**카탈로그 랜덤 가격** · {random_price_label(catalog_price)}",
-            f"**전용 랜덤 가격** · {random_price_label(exclusive_price)}",
-        ]
-        container = discord.ui.Container(accent_color=COLOR_VENDING)
-        add_brand_section(container, "\n".join(lines))
-        container.add_item(discord.ui.Separator())
-        container.add_item(
-            discord.ui.ActionRow(
-                RandomDrawButton(cog, "catalog", catalog_price),
-                RandomDrawButton(cog, "exclusive", exclusive_price),
-            )
-        )
-        self.add_item(container)
 
 
 class ArchivePanelView(discord.ui.LayoutView):
@@ -556,18 +504,25 @@ class ProductSelect(discord.ui.Select):
         *,
         page_index: int = 0,
         page_count: int = 1,
+        stock_counts: dict[str, int] | None = None,
     ):
         self.cog = cog
         self.mode = mode
+        stock_counts = stock_counts or {}
         options = []
         for product in products[:SELECT_OPTION_LIMIT]:
             product_id = product.get("product_id") or product.get("product_id_lower")
+            product_id_lower = str(product.get("product_id_lower") or normalize_product_id(product_id))
             price = int(product.get("price", 0))
-            description = f"{price:,}원 · ID: {product_id}"
+            if product.get("product_type") == "stock":
+                stock_count = stock_counts.get(product_id_lower, 0)
+                description = f"{price:,}원 · ID: {product_id} · 재고 {stock_count}개"
+            else:
+                description = f"{price:,}원 · ID: {product_id}"
             options.append(
                 discord.SelectOption(
                     label=str(product.get("title") or product_id)[:100],
-                    value=str(product.get("product_id_lower") or normalize_product_id(product_id)),
+                    value=product_id_lower,
                     description=description[:100],
                 )
             )
@@ -594,16 +549,29 @@ class ProductSelect(discord.ui.Select):
 
 
 class ProductMenuView(discord.ui.LayoutView):
-    def __init__(self, cog: VendingArchiveCog, category: dict | None, products: list[dict], mode: str):
+    def __init__(
+        self,
+        cog: VendingArchiveCog,
+        category: dict | None,
+        products: list[dict],
+        mode: str,
+        *,
+        stock_counts: dict[str, int] | None = None,
+    ):
         super().__init__(timeout=180)
+        stock_counts = stock_counts or {}
         category_name = (category or {}).get("name") or "카테고리"
         lines = [f"## {category_name}", "상품을 선택하면 상세 정보와 구매 버튼이 표시됩니다."]
         if products:
             lines.append("")
-            lines.extend(
-                f"- `{product['product_id']}` · {product.get('title') or product['product_id']} · {int(product.get('price', 0)):,}원"
-                for product in products[:10]
-            )
+            for product in products[:10]:
+                price_line = f"- `{product['product_id']}` · {product.get('title') or product['product_id']} · {int(product.get('price', 0)):,}원"
+                if product.get("product_type") == "stock":
+                    product_id_lower = str(
+                        product.get("product_id_lower") or normalize_product_id(product["product_id"])
+                    )
+                    price_line += f" · 재고 {stock_counts.get(product_id_lower, 0)}개"
+                lines.append(price_line)
             if len(products) > 10:
                 lines.append(f"- 외 {len(products) - 10}개")
 
@@ -620,6 +588,7 @@ class ProductMenuView(discord.ui.LayoutView):
                         mode,
                         page_index=page_index,
                         page_count=len(product_chunks),
+                        stock_counts=stock_counts,
                     )
                 )
             )
@@ -628,10 +597,13 @@ class ProductMenuView(discord.ui.LayoutView):
 
 class ProductDetailView(discord.ui.LayoutView):
     def __init__(self, cog: VendingArchiveCog, product: dict, *, owned: bool = False,
-                 discounted_price: int | None = None, applied: dict | None = None):
+                 discounted_price: int | None = None, applied: dict | None = None,
+                 stock_count: int | None = None):
         super().__init__(timeout=180)
         self.cog = cog
         self.product_id = product["product_id"]
+        is_stock = product.get("product_type") == "stock"
+        out_of_stock = is_stock and not owned and (stock_count or 0) <= 0
         lines = [
             f"## {product.get('title') or product['product_id']}",
             product.get("description") or "등록된 상품 설명이 없습니다.",
@@ -640,6 +612,8 @@ class ProductDetailView(discord.ui.LayoutView):
             f"가격: `{int(product.get('price', 0)):,}원`",
             f"상품 페이지: {cog.product_thread_mention(product)}",
         ]
+        if is_stock:
+            lines.append(f"재고: `{stock_count or 0}개`" + (" · 품절" if out_of_stock else ""))
         original_price = int(product.get("price", 0))
         if applied and discounted_price is not None and discounted_price < original_price:
             discount_amount = original_price - discounted_price
@@ -657,8 +631,9 @@ class ProductDetailView(discord.ui.LayoutView):
         add_brand_section(container, "\n".join(lines))
         container.add_item(discord.ui.Separator())
         buy_button = discord.ui.Button(
-            label="구매하기" if not owned else "다운로드",
-            style=discord.ButtonStyle.success if not owned else discord.ButtonStyle.secondary,
+            label="품절" if out_of_stock else ("구매하기" if not owned else "다운로드"),
+            style=discord.ButtonStyle.secondary if (out_of_stock or owned) else discord.ButtonStyle.success,
+            disabled=out_of_stock,
         )
         buy_button.callback = self.buy
         discount_button = discord.ui.Button(label="쿠폰 / 프로모션", style=discord.ButtonStyle.primary)
@@ -783,6 +758,178 @@ class DownloadSelectView(discord.ui.LayoutView):
         self.add_item(container)
 
 
+class StockUnitAddModal(discord.ui.Modal, title="재고 추가"):
+    contents = discord.ui.TextInput(
+        label="재고 내용 (한 줄에 1개)",
+        style=discord.TextStyle.paragraph,
+        placeholder="아이디:비밀번호\n아이디:비밀번호\n...",
+        max_length=4000,
+    )
+
+    def __init__(self, cog: VendingArchiveCog, product_id: str):
+        super().__init__()
+        self.cog = cog
+        self.product_id = product_id
+
+    async def on_submit(self, interaction: discord.Interaction):
+        await self.cog.handle_stock_add_submit(interaction, self.product_id, str(self.contents.value))
+
+
+class StockProductSelect(discord.ui.Select):
+    def __init__(
+        self,
+        cog: VendingArchiveCog,
+        products: list[dict],
+        stock_counts: dict[str, int],
+        selected_product_id: str | None,
+    ):
+        self.cog = cog
+        options = []
+        selected_lower = normalize_product_id(selected_product_id or "")
+        for product in products[:SELECT_OPTION_LIMIT]:
+            product_id = product["product_id"]
+            product_id_lower = str(product.get("product_id_lower") or normalize_product_id(product_id))
+            count = stock_counts.get(product_id_lower, 0)
+            options.append(
+                discord.SelectOption(
+                    label=str(product.get("title") or product_id)[:100],
+                    value=product_id_lower,
+                    description=f"재고 {count}개 · ID: {product_id}"[:100],
+                    default=product_id_lower == selected_lower,
+                )
+            )
+        if not options:
+            options.append(discord.SelectOption(label="등록된 재고형 상품이 없습니다.", value="none"))
+
+        super().__init__(
+            placeholder="재고를 관리할 상품을 선택하세요.",
+            custom_id="devilblox:vending:stock:select",
+            min_values=1,
+            max_values=1,
+            options=options,
+            disabled=not products,
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        if self.values[0] == "none":
+            await interaction.response.defer(ephemeral=True)
+            return
+        await self.cog.handle_stock_panel_select(interaction, self.values[0])
+
+
+class VendingStockPanelView(discord.ui.LayoutView):
+    def __init__(
+        self,
+        cog: VendingArchiveCog,
+        products: list[dict],
+        stock_counts: dict[str, int],
+        selected_product_id: str | None = None,
+    ):
+        super().__init__(timeout=None)
+        self.cog = cog
+        self.selected_product_id = self.resolve_selected(products, selected_product_id)
+        selected = self.find_selected(products, self.selected_product_id)
+
+        container = discord.ui.Container(accent_color=COLOR_VENDING)
+        add_brand_section(
+            container,
+            "\n".join(
+                (
+                    "## VENDING STOCK",
+                    "재고형 상품의 재고를 추가하거나 전체 삭제할 수 있습니다.",
+                    f"재고형 상품 `{len(products)}`개",
+                )
+            ),
+        )
+
+        if selected is None:
+            selected_text = (
+                "### 선택 상품\n등록된 재고형 상품이 없습니다.\n"
+                "-# `/상품등록`에서 재고형으로 상품을 먼저 등록해주세요."
+            )
+        else:
+            product_id = selected["product_id"]
+            product_id_lower = str(selected.get("product_id_lower") or normalize_product_id(product_id))
+            count = stock_counts.get(product_id_lower, 0)
+            selected_text = (
+                f"### 선택 상품\n**{selected.get('title') or product_id}**\n"
+                f"-# 상품 ID · `{product_id}`\n\n"
+                f"### 현재 재고\n`{count}개`"
+            )
+
+        container.add_item(discord.ui.Separator())
+        container.add_item(discord.ui.TextDisplay(selected_text))
+        container.add_item(discord.ui.Separator(spacing=discord.SeparatorSpacing.small))
+        container.add_item(
+            discord.ui.ActionRow(StockProductSelect(cog, products, stock_counts, self.selected_product_id))
+        )
+
+        add_button = discord.ui.Button(
+            label="재고 추가",
+            style=discord.ButtonStyle.success,
+            custom_id="devilblox:vending:stock:add",
+            disabled=selected is None,
+        )
+        add_button.callback = self.add_stock
+        clear_button = discord.ui.Button(
+            label="전체 삭제",
+            style=discord.ButtonStyle.danger,
+            custom_id="devilblox:vending:stock:clear",
+            disabled=selected is None,
+        )
+        clear_button.callback = self.clear_stock
+        refresh_button = discord.ui.Button(
+            label="새로고침",
+            style=discord.ButtonStyle.secondary,
+            custom_id="devilblox:vending:stock:refresh",
+        )
+        refresh_button.callback = self.refresh
+        container.add_item(discord.ui.ActionRow(add_button, clear_button, refresh_button))
+        self.add_item(container)
+
+    @staticmethod
+    def resolve_selected(products: list[dict], selected_product_id: str | None) -> str | None:
+        if not products:
+            return None
+        selected_lower = normalize_product_id(selected_product_id or "")
+        lowers = {
+            str(product.get("product_id_lower") or normalize_product_id(product["product_id"]))
+            for product in products
+        }
+        if selected_lower in lowers:
+            return selected_lower
+        first = products[0]
+        return str(first.get("product_id_lower") or normalize_product_id(first["product_id"]))
+
+    @staticmethod
+    def find_selected(products: list[dict], selected_product_id: str | None) -> dict | None:
+        selected_lower = normalize_product_id(selected_product_id or "")
+        for product in products:
+            product_lower = str(product.get("product_id_lower") or normalize_product_id(product["product_id"]))
+            if product_lower == selected_lower:
+                return product
+        return None
+
+    async def add_stock(self, interaction: discord.Interaction):
+        if not await self.cog.staff_allowed(interaction):
+            await interaction.response.send_message(
+                embed=error_embed("권한 없음", "셀러 또는 관리자 권한이 필요합니다."), ephemeral=True
+            )
+            return
+        if not self.selected_product_id:
+            await interaction.response.send_message(
+                embed=error_embed("상품 없음", "재고를 추가할 상품을 먼저 선택해주세요."), ephemeral=True
+            )
+            return
+        await interaction.response.send_modal(StockUnitAddModal(self.cog, self.selected_product_id))
+
+    async def clear_stock(self, interaction: discord.Interaction):
+        await self.cog.handle_stock_clear(interaction, self.selected_product_id)
+
+    async def refresh(self, interaction: discord.Interaction):
+        await self.cog.handle_stock_panel_select(interaction, self.selected_product_id)
+
+
 __all__ = [
     "ArchivePanelView",
     "ArchiveResultView",
@@ -801,12 +948,13 @@ __all__ = [
     "ProductPurchaseModal",
     "ProductSelect",
     "PromotionCodeModal",
-    "RandomDrawButton",
-    "RandomMenuView",
     "RejectChargeModal",
     "SELECT_OPTION_LIMIT",
+    "StockProductSelect",
+    "StockUnitAddModal",
     "VendingCouponSelect",
     "VendingPanelView",
+    "VendingStockPanelView",
     "add_brand_section",
     "add_panel_gif",
     "chunked",

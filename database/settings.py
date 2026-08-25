@@ -40,6 +40,8 @@ CHANNEL_KEYS = {
     "stock_condition": "재고 현황",
     "stock_control": "재고 컨트롤",
     "vending": "자판기 패널",
+    "vending_stock": "자판기 재고 패널",
+    "vending_restock": "자판기 입고 알림",
     "archive": "아카이브 패널",
     "operations": "서버 관리 패널",
     "event_announce": "이벤트 공지",
@@ -111,10 +113,6 @@ def default_settings(guild_id: int) -> dict:
         "roles": {key: None for key in ROLE_KEYS},
         "channels": {key: None for key in CHANNEL_KEYS},
         "categories": {key: None for key in CATEGORY_KEYS},
-        "vending": {
-            "random_catalog_price": None,
-            "random_exclusive_price": None,
-        },
         "meta": {
             "ticket_condition_message_id": None,
             "ticket_condition_reset_at": None,
@@ -126,6 +124,7 @@ def default_settings(guild_id: int) -> dict:
             "middleman_panel_message_id": None,
             "purchase_panel_message_id": None,
             "vending_panel_message_id": None,
+            "vending_stock_panel_message_id": None,
             "archive_panel_message_id": None,
             "operations_panel_message_id": None,
             "support_panel_message_id": None,
@@ -159,7 +158,7 @@ class GuildSettingsStore:
             return await self.ensure_guild(guild_id)
 
         merged = default_settings(guild_id)
-        for section in ("roles", "channels", "categories", "vending", "meta"):
+        for section in ("roles", "channels", "categories", "meta"):
             merged[section].update(doc.get(section, {}))
         merged.update({k: v for k, v in doc.items() if k not in merged})
         return merged
