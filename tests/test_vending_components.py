@@ -14,6 +14,7 @@ from cogs.vending_views import (
     ArchiveResultView,
     ChargeAdminView,
     ProductPurchaseModal,
+    RandomMenuView,
     VendingPanelView,
 )
 
@@ -42,8 +43,37 @@ class VendingComponentLayoutTests(unittest.TestCase):
         )
 
         self.assertIsInstance(view, discord.ui.LayoutView)
-        self.assertIn("VENDING MACHINE", view_text(view))
-        self.assertIn("판매 상품 `25`개", view_text(view))
+        self.assertEqual(len(view.children), 1)
+        self.assertIsInstance(view.children[0], discord.ui.Container)
+        text = view_text(view)
+        self.assertIn("VENDING MACHINE", text)
+        self.assertIn("### 🇰🇷 한국어", text)
+        self.assertIn("판매 상품 `25`개", text)
+        self.assertIn("### 🇺🇸 English", text)
+        self.assertIn("Products for sale `25`", text)
+        self.assertIn("### 🇯🇵 日本語", text)
+        self.assertIn("販売商品 `25`件", text)
+        self.assertEqual(
+            sum(isinstance(item, discord.ui.Separator) for item in view.children[0].children),
+            4,
+        )
+        buttons = view_buttons(view)
+        self.assertEqual(len(buttons), 5)
+        self.assertEqual(buttons[-1].custom_id, "devilblox:vending:random")
+        self.assertEqual(buttons[-1].label, "랜덤뽑기")
+
+    def test_random_menu_shows_prices_and_disables_undraws_without_a_price(self) -> None:
+        view = RandomMenuView(SimpleNamespace(), 500, None)
+
+        text = view_text(view)
+        self.assertIn("500원", text)
+        self.assertIn("미설정", text)
+        buttons = view_buttons(view)
+        self.assertEqual(len(buttons), 2)
+        catalog_button = next(button for button in buttons if button.label == "카탈로그 랜덤")
+        exclusive_button = next(button for button in buttons if button.label == "전용 랜덤")
+        self.assertFalse(catalog_button.disabled)
+        self.assertTrue(exclusive_button.disabled)
 
     def test_pending_charge_is_one_persistent_interactive_container(self) -> None:
         charge = {
@@ -158,6 +188,103 @@ class VendingComponentCallbackTests(unittest.IsolatedAsyncioTestCase):
         modal = interaction.response.send_modal.await_args.args[0]
         self.assertIsInstance(modal, ProductPurchaseModal)
         self.assertEqual(str(modal.product_id.default), "product-1")
+
+    async def test_panel_random_button_opens_random_menu(self) -> None:
+        cog = SimpleNamespace(handle_random_menu=AsyncMock())
+        view = VendingPanelView(cog)
+        random_button = next(
+            button for button in view_buttons(view) if button.custom_id == "devilblox:vending:random"
+        )
+        interaction = SimpleNamespace()
+
+        await random_button.callback(interaction)
+
+        cog.handle_random_menu.assert_awaited_once_with(interaction)
+
+    async def test_random_menu_buttons_trigger_the_matching_draw_source(self) -> None:
+        cog = SimpleNamespace(handle_random_draw=AsyncMock())
+        view = RandomMenuView(cog, 500, 700)
+        catalog_button = next(button for button in view_buttons(view) if button.label == "카탈로그 랜덤")
+        exclusive_button = next(button for button in view_buttons(view) if button.label == "전용 랜덤")
+        interaction = SimpleNamespace()
+
+        await catalog_button.callback(interaction)
+        await exclusive_button.callback(interaction)
+
+        cog.handle_random_draw.assert_any_await(interaction, "catalog")
+        cog.handle_random_draw.assert_any_await(interaction, "exclusive")
+
+    async def test_random_menu_reads_configured_prices(self) -> None:
+        repos = SimpleNamespace(settings=SimpleNamespace(get_value=AsyncMock(side_effect=[500, None])))
+        cog = object.__new__(VendingArchiveCog)
+        cog.bot = SimpleNamespace(repos=repos)
+        interaction = SimpleNamespace(
+            guild=SimpleNamespace(id=1),
+            response=SimpleNamespace(defer=AsyncMock()),
+            followup=SimpleNamespace(send=AsyncMock()),
+        )
+
+        with patch("cogs.cogs_vending_archive.branded_files", return_value=[]):
+            await cog.handle_random_menu(interaction)
+
+        kwargs = interaction.followup.send.await_args.kwargs
+        self.assertIsInstance(kwargs["view"], RandomMenuView)
+        text = view_text(kwargs["view"])
+        self.assertIn("500원", text)
+        self.assertIn("미설정", text)
+
+    async def test_random_draw_requires_a_configured_price(self) -> None:
+        repos = SimpleNamespace(settings=SimpleNamespace(get_value=AsyncMock(return_value=None)))
+        cog = object.__new__(VendingArchiveCog)
+        cog.bot = SimpleNamespace(repos=repos)
+        interaction = SimpleNamespace(
+            guild=SimpleNamespace(id=1),
+            response=SimpleNamespace(defer=AsyncMock()),
+            followup=SimpleNamespace(send=AsyncMock()),
+        )
+
+        await cog.handle_random_draw(interaction, "exclusive")
+
+        kwargs = interaction.followup.send.await_args.kwargs
+        self.assertIn("가격 미설정", kwargs["embed"].title)
+
+    async def test_random_draw_success_sends_result_and_purchase_log(self) -> None:
+        product = {
+            "product_id": "prize-a",
+            "title": "프라이즈",
+            "terabox_url": "https://example.test/file",
+        }
+        repos = SimpleNamespace(
+            settings=SimpleNamespace(get_value=AsyncMock(return_value=300)),
+            random_products=SimpleNamespace(list_active=AsyncMock(return_value=[product])),
+        )
+        cog = object.__new__(VendingArchiveCog)
+        cog.bot = SimpleNamespace(repos=repos)
+        cog.commerce = SimpleNamespace(
+            random_purchase=AsyncMock(
+                return_value=SimpleNamespace(
+                    status="purchased",
+                    product=product,
+                    price=300,
+                    log={"product_id": "prize-a"},
+                    current_cash=700,
+                )
+            )
+        )
+        cog.send_purchase_log = AsyncMock()
+        interaction = SimpleNamespace(
+            guild=SimpleNamespace(id=1),
+            user=SimpleNamespace(id=2),
+            response=SimpleNamespace(defer=AsyncMock()),
+            followup=SimpleNamespace(send=AsyncMock()),
+        )
+
+        await cog.handle_random_draw(interaction, "exclusive")
+
+        cog.commerce.random_purchase.assert_awaited_once_with(1, 2, [product], 300, source="exclusive")
+        cog.send_purchase_log.assert_awaited_once_with(interaction.guild, {"product_id": "prize-a"})
+        kwargs = interaction.followup.send.await_args.kwargs
+        self.assertIn("프라이즈", kwargs["embed"].description or "")
 
     async def test_charge_edit_migrates_embed_and_retains_existing_proof(self) -> None:
         cog = object.__new__(VendingArchiveCog)

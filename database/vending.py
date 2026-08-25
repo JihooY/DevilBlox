@@ -194,6 +194,82 @@ class ProductStore:
         return result.modified_count > 0
 
 
+class RandomProductStore:
+    """Products that are only obtainable through the random vending draw."""
+
+    def __init__(self, db):
+        self.collection = db["random_products"]
+
+    async def ensure_indexes(self):
+        await self.collection.create_index([("guild_id", 1), ("product_id_lower", 1)], unique=True)
+        await self.collection.create_index([("guild_id", 1), ("active", 1)])
+
+    async def upsert(
+        self,
+        guild_id: int,
+        product_id: str,
+        *,
+        title: str,
+        terabox_url: str,
+        description: str = "",
+        weight: int = 1,
+        seller_id: int | None = None,
+        created_by: int | None = None,
+    ):
+        now = _now()
+        weight = max(1, int(weight))
+        product_id = product_id.strip()
+        product_id_lower = normalize_product_id(product_id)
+        doc = {
+            "guild_id": guild_id,
+            "product_id": product_id,
+            "product_id_lower": product_id_lower,
+            "title": title.strip() or product_id,
+            "terabox_url": terabox_url.strip(),
+            "description": description.strip(),
+            "weight": weight,
+            "seller_id": seller_id,
+            "active": True,
+            "updated_at": now,
+        }
+        if created_by is not None:
+            doc["updated_by"] = created_by
+
+        await self.collection.update_one(
+            {"_id": product_key(guild_id, product_id)},
+            {
+                "$set": doc,
+                "$setOnInsert": {
+                    "_id": product_key(guild_id, product_id),
+                    "created_by": created_by,
+                    "created_at": now,
+                },
+            },
+            upsert=True,
+        )
+        return await self.get(guild_id, product_id, include_inactive=True)
+
+    async def get(self, guild_id: int, product_id: str, *, include_inactive: bool = False):
+        query = {"_id": product_key(guild_id, product_id)}
+        if not include_inactive:
+            query["active"] = True
+        return await self.collection.find_one(query)
+
+    async def list_active(self, guild_id: int, limit: int | None = None):
+        return (
+            await self.collection.find({"guild_id": guild_id, "active": True})
+            .sort([("title", 1), ("product_id", 1)])
+            .to_list(length=limit)
+        )
+
+    async def deactivate(self, guild_id: int, product_id: str, deleted_by: int | None = None) -> bool:
+        result = await self.collection.update_one(
+            {"_id": product_key(guild_id, product_id), "active": True},
+            {"$set": {"active": False, "deleted_by": deleted_by, "updated_at": _now()}},
+        )
+        return result.modified_count > 0
+
+
 class ArchiveStore:
     def __init__(self, db):
         self.collection = db["archives"]
@@ -405,6 +481,7 @@ class VendingLogStore:
         before_cash: int,
         after_cash: int,
         discount_code: str | None = None,
+        kind: str = "purchase",
     ):
         price = int(price)
         original_price = int(original_price)
@@ -430,6 +507,7 @@ class VendingLogStore:
             "before_cash": int(before_cash),
             "after_cash": int(after_cash),
             "seller_id": product.get("seller_id"),
+            "kind": kind,
             "purchased_at": now,
         }
         if discount_code:
@@ -485,6 +563,54 @@ class VendingLogStore:
         if entitlement and entitlement.get("status") == "purchased":
             return entitlement, False
         raise RuntimeError("purchase entitlement could not be completed")
+
+    async def grant_owned_product(
+        self,
+        guild_id: int,
+        user_id: int,
+        product: dict,
+        *,
+        operation_id: str,
+    ) -> dict:
+        """Directly grant a purchased entitlement, e.g. after a random draw.
+
+        Unlike :meth:`reserve_product`/:meth:`complete_product_purchase`, this
+        skips the pending-reservation dance: the caller has already charged a
+        fixed draw price up front, so a duplicate draw of the same item should
+        simply refresh the entitlement instead of racing a unique-index error.
+        """
+        now = _now()
+        product_id = product["product_id"]
+        product_id_lower = normalize_product_id(product_id)
+        await self.user_products.update_one(
+            {
+                "guild_id": guild_id,
+                "user_id": user_id,
+                "product_id_lower": product_id_lower,
+            },
+            {
+                "$set": {
+                    "product_id": product_id,
+                    "title": product.get("title", product_id),
+                    "terabox_url": product.get("terabox_url", ""),
+                    "status": "purchased",
+                    "purchased_at": now,
+                    "updated_at": now,
+                },
+                "$setOnInsert": {
+                    "operation_id": operation_id,
+                    "reserved_at": now,
+                },
+            },
+            upsert=True,
+        )
+        return await self.user_products.find_one(
+            {
+                "guild_id": guild_id,
+                "user_id": user_id,
+                "product_id_lower": product_id_lower,
+            }
+        )
 
     async def reserve_product(
         self,

@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import random
 from dataclasses import dataclass
 from typing import Literal
+from uuid import uuid4
 
 from database.vending import normalize_product_id
 
@@ -26,6 +28,15 @@ class PurchaseResult:
     spent: dict | None = None
     log: dict | None = None
     newly_completed: bool = False
+    current_cash: int = 0
+
+
+@dataclass(slots=True)
+class RandomPurchaseResult:
+    status: Literal["purchased", "insufficient_funds", "empty_pool"]
+    product: dict | None = None
+    price: int = 0
+    log: dict | None = None
     current_cash: int = 0
 
 
@@ -250,5 +261,83 @@ class VendingCommerceService:
             spent=spent,
             log=log,
             newly_completed=newly_completed,
+            current_cash=int(spent["after_cash"]),
+        )
+
+    async def random_purchase(
+        self,
+        guild_id: int,
+        user_id: int,
+        pool: list[dict],
+        price: int,
+        *,
+        source: str,
+    ) -> RandomPurchaseResult:
+        """Charge a fixed draw price once and hand back one random product.
+
+        The draw price is independent of any individual product's own price,
+        so unlike :meth:`purchase` this never touches coupons/promotions and
+        never blocks on the buyer already owning the drawn item -- duplicate
+        draws are expected gacha behaviour, not an error.
+        """
+        if not pool:
+            return RandomPurchaseResult(status="empty_pool")
+
+        price = int(price)
+        if price <= 0:
+            raise ValueError("random draw price must be greater than zero")
+
+        operation_id = f"random:{source}:{uuid4().hex}"
+        spent = await self.repos.users.spend_cash_once(
+            guild_id,
+            user_id,
+            price,
+            operation_id=operation_id,
+            reason=f"vending random draw ({source})",
+        )
+        if spent is None:
+            user = await self.repos.users.ensure_user(guild_id, user_id)
+            return RandomPurchaseResult(
+                status="insufficient_funds",
+                price=price,
+                current_cash=int(user.get("cash", 0)),
+            )
+
+        weights = [max(1, int(entry.get("weight", 1))) for entry in pool]
+        product = random.choices(pool, weights=weights, k=1)[0]
+
+        log = await self.repos.vending.upsert_purchase_log(
+            operation_id=operation_id,
+            guild_id=guild_id,
+            user_id=user_id,
+            product=product,
+            price=price,
+            original_price=price,
+            before_cash=spent["before_cash"],
+            after_cash=spent["after_cash"],
+            kind=f"random_{source}",
+        )
+        await self.repos.vending.grant_owned_product(
+            guild_id,
+            user_id,
+            product,
+            operation_id=operation_id,
+        )
+        seller_id = product.get("seller_id")
+        if seller_id:
+            seller_recorded = await self.repos.sellers.add_sale_once(
+                guild_id,
+                int(seller_id),
+                price,
+                operation_id=operation_id,
+            )
+            if not seller_recorded:
+                raise RuntimeError("seller sale could not be recorded")
+
+        return RandomPurchaseResult(
+            status="purchased",
+            product=product,
+            price=price,
+            log=log,
             current_cash=int(spent["after_cash"]),
         )

@@ -42,6 +42,7 @@ CHANNEL_KEYS = {
     "vending": "자판기 패널",
     "archive": "아카이브 패널",
     "operations": "서버 관리 패널",
+    "event_announce": "이벤트 공지",
 }
 
 CATEGORY_KEYS = {
@@ -110,6 +111,10 @@ def default_settings(guild_id: int) -> dict:
         "roles": {key: None for key in ROLE_KEYS},
         "channels": {key: None for key in CHANNEL_KEYS},
         "categories": {key: None for key in CATEGORY_KEYS},
+        "vending": {
+            "random_catalog_price": None,
+            "random_exclusive_price": None,
+        },
         "meta": {
             "ticket_condition_message_id": None,
             "ticket_condition_reset_at": None,
@@ -154,7 +159,7 @@ class GuildSettingsStore:
             return await self.ensure_guild(guild_id)
 
         merged = default_settings(guild_id)
-        for section in ("roles", "channels", "categories", "meta"):
+        for section in ("roles", "channels", "categories", "vending", "meta"):
             merged[section].update(doc.get(section, {}))
         merged.update({k: v for k, v in doc.items() if k not in merged})
         return merged

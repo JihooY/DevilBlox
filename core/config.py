@@ -100,6 +100,7 @@ class AppConfig:
     gif_rotation_enabled: bool
     gif_local_variant: str
     gif_recovery_upload_interval: float
+    museum_url: str
     operations: OperationsConfig
     mongo: MongoConfig
 
@@ -141,6 +142,11 @@ class AppConfig:
         if not math.isfinite(gif_recovery_upload_interval) or gif_recovery_upload_interval < 0:
             raise ConfigError("GIF_RECOVERY_UPLOAD_INTERVAL must be zero or greater.")
 
+        museum_url = _env("MUSEUM_URL", "https://claude.ai/code/artifact/5fb4dca3-d0ac-4c1c-a86d-841376afea5b")
+        parsed_museum_url = urlparse(museum_url)
+        if parsed_museum_url.scheme not in {"http", "https"} or not parsed_museum_url.netloc:
+            raise ConfigError("MUSEUM_URL must be an absolute HTTP(S) URL.")
+
         mongo = MongoConfig(
             uri=_optional_env("MONGO_URI"),
             db_name=_env("MONGO_DB_NAME", "devilblox"),
@@ -176,6 +182,7 @@ class AppConfig:
             gif_rotation_enabled=_bool_env("GIF_ROTATION_ENABLED", False),
             gif_local_variant=gif_local_variant,
             gif_recovery_upload_interval=gif_recovery_upload_interval,
+            museum_url=museum_url,
             operations=OperationsConfig.from_env(),
             mongo=mongo,
         )

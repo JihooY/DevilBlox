@@ -27,6 +27,7 @@ from cogs.vending_views import (
     ProductPurchaseModal,
     ProductSelect,
     PromotionCodeModal,
+    RandomMenuView,
     RejectChargeModal,
     SELECT_OPTION_LIMIT,
     VendingCouponSelect,
@@ -39,6 +40,7 @@ from database.vending import (
     ArchiveStore,
     ProductCategoryStore,
     ProductStore,
+    RandomProductStore,
     VendingLogStore,
     normalize_product_id,
 )
@@ -186,6 +188,9 @@ class VendingArchiveCog(commands.Cog):
         if not hasattr(repos, "products"):
             repos.products = ProductStore(db)
             missing_stores.append(repos.products)
+        if not hasattr(repos, "random_products"):
+            repos.random_products = RandomProductStore(db)
+            missing_stores.append(repos.random_products)
         if not hasattr(repos, "archives"):
             repos.archives = ArchiveStore(db)
             missing_stores.append(repos.archives)
@@ -275,6 +280,13 @@ class VendingArchiveCog(commands.Cog):
             title = source.get("title") or product_id
             url = (product or {}).get("terabox_url") or owned.get("terabox_url") or "저장된 링크가 없습니다."
             embed.add_field(name=f"{title} (`{product_id}`)", value=url, inline=False)
+        return embed
+
+    def build_random_result_embed(self, source: str, product: dict, price: int) -> discord.Embed:
+        label = "카탈로그 랜덤" if source == "catalog" else "전용 랜덤"
+        title = product.get("title") or product.get("product_id") or "상품"
+        embed = success_embed(f"{label} 뽑기 결과", f"{price:,}원을 지불하고 **{title}**을(를) 뽑았습니다!")
+        embed.add_field(name=title, value=product.get("terabox_url") or "저장된 링크가 없습니다.", inline=False)
         return embed
 
     async def vending_panel_stats(self, guild_id: int) -> dict:
@@ -826,6 +838,77 @@ class VendingArchiveCog(commands.Cog):
                 amount=price,
             )
         await interaction.followup.send(embed=self.build_download_embed(product), ephemeral=True)
+
+    async def get_random_price(self, guild_id: int, source: str) -> int | None:
+        return await self.repos.settings.get_value(guild_id, "vending", f"random_{source}_price")
+
+    async def handle_random_menu(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
+        if not interaction.guild:
+            await interaction.followup.send(embed=error_embed("처리 실패", "서버 안에서만 사용할 수 있습니다."), ephemeral=True)
+            return
+        catalog_price = await self.get_random_price(interaction.guild.id, "catalog")
+        exclusive_price = await self.get_random_price(interaction.guild.id, "exclusive")
+        await interaction.followup.send(
+            view=RandomMenuView(self, catalog_price, exclusive_price),
+            files=branded_files(),
+            ephemeral=True,
+        )
+
+    async def handle_random_draw(self, interaction: discord.Interaction, source: str):
+        await interaction.response.defer(ephemeral=True)
+        if not interaction.guild:
+            await interaction.followup.send(embed=error_embed("처리 실패", "서버 안에서만 사용할 수 있습니다."), ephemeral=True)
+            return
+        price = await self.get_random_price(interaction.guild.id, source)
+        if not price:
+            await interaction.followup.send(
+                embed=error_embed("가격 미설정", "관리자가 `/랜덤가격설정`으로 뽑기 가격을 먼저 등록해야 합니다."),
+                ephemeral=True,
+            )
+            return
+        if source == "catalog":
+            pool = await self.repos.products.list_active(interaction.guild.id, limit=None)
+        else:
+            pool = await self.repos.random_products.list_active(interaction.guild.id, limit=None)
+
+        result = await self.commerce.random_purchase(
+            interaction.guild.id,
+            interaction.user.id,
+            pool,
+            price,
+            source=source,
+        )
+        if result.status == "empty_pool":
+            await interaction.followup.send(
+                embed=error_embed(
+                    "상품 없음",
+                    "랜덤 뽑기에 등록된 상품이 없습니다."
+                    if source == "exclusive"
+                    else "판매 중인 상품이 없습니다.",
+                ),
+                ephemeral=True,
+            )
+            return
+        if result.status == "insufficient_funds":
+            await interaction.followup.send(
+                embed=error_embed(
+                    "잔액 부족",
+                    f"현재 잔액은 {result.current_cash:,}원이고, 뽑기 가격은 {result.price:,}원입니다.",
+                ),
+                ephemeral=True,
+            )
+            return
+
+        product = result.product
+        log_doc = result.log
+        if product is None or log_doc is None:
+            raise RuntimeError("completed random draw is missing its persisted result")
+        await self.send_purchase_log(interaction.guild, log_doc)
+        await interaction.followup.send(
+            embed=self.build_random_result_embed(source, product, result.price),
+            ephemeral=True,
+        )
 
     async def handle_discount_menu(self, interaction: discord.Interaction, product_id: str):
         coupon_cog = self.bot.get_cog("CouponCog")
@@ -1382,6 +1465,130 @@ class VendingArchiveCog(commands.Cog):
             ephemeral=True,
         )
 
+    @app_commands.command(name="랜덤가격설정", description="자판기 랜덤뽑기 가격을 설정합니다.")
+    @app_commands.default_permissions(administrator=True)
+    @app_commands.describe(종류="가격을 설정할 랜덤뽑기 종류", 가격="뽑기 1회당 가격")
+    @app_commands.choices(
+        종류=[
+            app_commands.Choice(name="카탈로그 랜덤 (선택 구매 가능 상품 중 랜덤)", value="catalog"),
+            app_commands.Choice(name="전용 랜덤 (랜덤 전용 상품)", value="exclusive"),
+        ]
+    )
+    async def set_random_price(
+        self,
+        interaction: discord.Interaction,
+        종류: app_commands.Choice[str],
+        가격: int,
+    ):
+        await interaction.response.defer(ephemeral=True)
+        if not await self.admin_allowed(interaction):
+            await interaction.followup.send(embed=error_embed("권한 없음", "관리자 권한이 필요합니다."), ephemeral=True)
+            return
+        if 가격 <= 0:
+            await interaction.followup.send(embed=error_embed("가격 오류", "가격은 1원 이상이어야 합니다."), ephemeral=True)
+            return
+        await self.repos.settings.set_value(interaction.guild.id, "vending", f"random_{종류.value}_price", int(가격))
+        await interaction.followup.send(
+            embed=success_embed("랜덤뽑기 가격 설정 완료", f"{종류.name}: {int(가격):,}원"),
+            ephemeral=True,
+        )
+
+    @app_commands.command(name="랜덤전용상품등록", description="랜덤뽑기에서만 나오는 전용 상품을 등록하거나 수정합니다.")
+    @app_commands.default_permissions(send_messages=True)
+    @app_commands.describe(
+        product_id="랜덤 전용 상품 ID",
+        title="상품명",
+        terabox_url="구매자에게 지급할 테라박스 링크",
+        description="상품 설명 요약",
+        weight="가중치. 클수록 더 잘 뽑힙니다. (기본 1)",
+        seller="상품 셀러",
+    )
+    async def register_random_product(
+        self,
+        interaction: discord.Interaction,
+        product_id: str,
+        title: str,
+        terabox_url: str,
+        description: str = "",
+        weight: int = 1,
+        seller: discord.Member | None = None,
+    ):
+        await interaction.response.defer(ephemeral=True)
+        if not await self.staff_allowed(interaction):
+            await interaction.followup.send(embed=error_embed("권한 없음", "셀러 또는 관리자 권한이 필요합니다."), ephemeral=True)
+            return
+        if not product_id.strip() or len(product_id.strip()) > 64:
+            await interaction.followup.send(embed=error_embed("상품 ID 오류", "상품 ID는 1~64자로 입력해주세요."), ephemeral=True)
+            return
+        if not is_http_url(terabox_url):
+            await interaction.followup.send(embed=error_embed("링크 오류", "테라박스 링크는 http 또는 https URL이어야 합니다."), ephemeral=True)
+            return
+        if weight <= 0:
+            await interaction.followup.send(embed=error_embed("가중치 오류", "가중치는 1 이상이어야 합니다."), ephemeral=True)
+            return
+
+        is_admin = await self.admin_allowed(interaction)
+        if seller is not None and not is_admin and seller.id != interaction.user.id:
+            await interaction.followup.send(embed=error_embed("권한 없음", "셀러는 본인 상품만 등록할 수 있습니다."), ephemeral=True)
+            return
+
+        seller_member = seller
+        if seller_member is None and not is_admin and isinstance(interaction.user, discord.Member):
+            seller_member = interaction.user
+        seller_id = seller_member.id if seller_member else None
+        if seller_member:
+            await self.repos.sellers.upsert(interaction.guild.id, seller_member.id, seller_member.display_name)
+
+        product = await self.repos.random_products.upsert(
+            interaction.guild.id,
+            product_id,
+            title=title,
+            terabox_url=terabox_url,
+            description=description,
+            weight=weight,
+            seller_id=seller_id,
+            created_by=interaction.user.id,
+        )
+        await interaction.followup.send(
+            embed=success_embed("랜덤 전용 상품 등록 완료", f"`{product['product_id']}` · 가중치 {product['weight']}"),
+            ephemeral=True,
+        )
+
+    @app_commands.command(name="랜덤전용상품삭제", description="랜덤뽑기 전용 상품을 비활성화합니다.")
+    @app_commands.default_permissions(send_messages=True)
+    @app_commands.describe(product_id="비활성화할 랜덤 전용 상품 ID")
+    async def delete_random_product(self, interaction: discord.Interaction, product_id: str):
+        await interaction.response.defer(ephemeral=True)
+        if not await self.staff_allowed(interaction):
+            await interaction.followup.send(embed=error_embed("권한 없음", "셀러 또는 관리자 권한이 필요합니다."), ephemeral=True)
+            return
+        product = await self.repos.random_products.get(interaction.guild.id, product_id, include_inactive=True)
+        if product is None:
+            await interaction.followup.send(embed=error_embed("상품 없음", "해당 상품 ID를 찾을 수 없습니다."), ephemeral=True)
+            return
+        if not await self.admin_allowed(interaction) and product.get("seller_id") != interaction.user.id:
+            await interaction.followup.send(embed=error_embed("권한 없음", "본인 상품만 삭제할 수 있습니다."), ephemeral=True)
+            return
+        deleted = await self.repos.random_products.deactivate(interaction.guild.id, product_id, interaction.user.id)
+        if not deleted:
+            await interaction.followup.send(embed=error_embed("처리 실패", "이미 비활성화된 상품입니다."), ephemeral=True)
+            return
+        await interaction.followup.send(embed=success_embed("랜덤 전용 상품 삭제 완료", f"`{product['product_id']}`"), ephemeral=True)
+
+    @app_commands.command(name="랜덤전용상품목록", description="등록된 랜덤뽑기 전용 상품을 확인합니다.")
+    @app_commands.default_permissions(send_messages=True)
+    async def list_random_products(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
+        products = await self.repos.random_products.list_active(interaction.guild.id, limit=50)
+        if not products:
+            await interaction.followup.send(embed=error_embed("상품 없음", "`/랜덤전용상품등록`으로 먼저 등록해주세요."), ephemeral=True)
+            return
+        lines = [
+            f"`{product['product_id']}` · {product['title']} · 가중치 {product.get('weight', 1)}"
+            for product in products
+        ]
+        await interaction.followup.send(embed=info_embed("랜덤 전용 상품 목록", "\n".join(lines)), ephemeral=True)
+
     async def autocomplete_categories(self, interaction: discord.Interaction, current: str):
         if not interaction.guild:
             return []
@@ -1421,6 +1628,21 @@ class VendingArchiveCog(commands.Cog):
     @add_archive.autocomplete("product_id")
     async def product_autocomplete(self, interaction: discord.Interaction, current: str):
         return await self.autocomplete_products(interaction, current)
+
+    @delete_random_product.autocomplete("product_id")
+    async def random_product_autocomplete(self, interaction: discord.Interaction, current: str):
+        if not interaction.guild:
+            return []
+        current_lower = current.casefold()
+        products = await self.repos.random_products.list_active(interaction.guild.id, limit=50)
+        choices = []
+        for product in products:
+            label = f"{product.get('title') or product['product_id']} ({product['product_id']})"
+            haystack = f"{product['product_id']} {product.get('title', '')}".casefold()
+            if current_lower and current_lower not in haystack:
+                continue
+            choices.append(app_commands.Choice(name=label[:100], value=product["product_id"]))
+        return choices[:25]
 
 
 async def setup(bot: commands.Bot):

@@ -257,19 +257,42 @@ class VendingPanelView(discord.ui.LayoutView):
         self.cog = cog
 
         bank_account = os.getenv("VENDING_BANK_ACCOUNT", "").strip()
-        lines = [
-            "## VENDING MACHINE",
-            "충전, 카테고리별 상품 구매, 구매한 상품 다운로드를 이용할 수 있습니다.",
+        language_sections = [
+            [
+                "### 🇰🇷 한국어",
+                "충전, 카테고리별 상품 구매, 구매한 상품 다운로드를 이용할 수 있습니다.",
+            ],
+            [
+                "### 🇺🇸 English",
+                "Top up your balance, browse and purchase products by category, and download your purchases.",
+            ],
+            [
+                "### 🇯🇵 日本語",
+                "チャージ、カテゴリー別の商品購入、購入済み商品のダウンロードをご利用いただけます。",
+            ],
         ]
         if bank_account:
-            lines.append(f"입금 계좌: `{bank_account}`")
+            language_sections[0].append(f"입금 계좌: `{bank_account}`")
+            language_sections[1].append(f"Deposit account: `{bank_account}`")
+            language_sections[2].append(f"振込口座: `{bank_account}`")
         if stats:
-            lines.append(
-                f"등록 카테고리 `{stats.get('category_count', 0)}`개 · 판매 상품 `{stats.get('product_count', 0)}`개"
+            category_count = stats.get("category_count", 0)
+            product_count = stats.get("product_count", 0)
+            language_sections[0].append(
+                f"등록 카테고리 `{category_count}`개 · 판매 상품 `{product_count}`개"
+            )
+            language_sections[1].append(
+                f"Categories `{category_count}` · Products for sale `{product_count}`"
+            )
+            language_sections[2].append(
+                f"登録カテゴリー `{category_count}`件・販売商品 `{product_count}`件"
             )
 
         container = discord.ui.Container(accent_color=COLOR_VENDING)
-        add_brand_section(container, "\n".join(lines))
+        add_brand_section(container, "## VENDING MACHINE\n-# 한국어 · English · 日本語")
+        for section_lines in language_sections:
+            container.add_item(discord.ui.Separator(spacing=discord.SeparatorSpacing.small))
+            container.add_item(discord.ui.TextDisplay("\n".join(section_lines)))
         add_panel_gif(container, gif_name, "DevilBlox vending panel")
         container.add_item(discord.ui.Separator())
 
@@ -300,7 +323,16 @@ class VendingPanelView(discord.ui.LayoutView):
             custom_id="devilblox:vending:download",
         )
         download_button.callback = self.download
-        container.add_item(discord.ui.ActionRow(charge_button, catalog_button, buy_button, download_button))
+
+        random_button = discord.ui.Button(
+            label="랜덤뽑기",
+            style=discord.ButtonStyle.primary,
+            custom_id="devilblox:vending:random",
+        )
+        random_button.callback = self.random
+        container.add_item(
+            discord.ui.ActionRow(charge_button, catalog_button, buy_button, download_button, random_button)
+        )
 
         self.add_item(container)
 
@@ -315,6 +347,49 @@ class VendingPanelView(discord.ui.LayoutView):
 
     async def download(self, interaction: discord.Interaction):
         await self.cog.handle_download_menu(interaction)
+
+    async def random(self, interaction: discord.Interaction):
+        await self.cog.handle_random_menu(interaction)
+
+
+def random_price_label(price: int | None) -> str:
+    return f"{int(price):,}원" if price else "미설정"
+
+
+class RandomDrawButton(discord.ui.Button):
+    def __init__(self, cog: VendingArchiveCog, source: str, price: int | None):
+        super().__init__(
+            label="카탈로그 랜덤" if source == "catalog" else "전용 랜덤",
+            style=discord.ButtonStyle.success,
+            disabled=not price,
+        )
+        self.cog = cog
+        self.source = source
+
+    async def callback(self, interaction: discord.Interaction):
+        await self.cog.handle_random_draw(interaction, self.source)
+
+
+class RandomMenuView(discord.ui.LayoutView):
+    def __init__(self, cog: VendingArchiveCog, catalog_price: int | None, exclusive_price: int | None):
+        super().__init__(timeout=180)
+        lines = [
+            "## 랜덤뽑기",
+            "카탈로그 랜덤은 선택 구매 가능한 상품 중에서, 전용 랜덤은 랜덤으로만 뽑을 수 있는 상품 중에서 하나를 뽑습니다.",
+            "",
+            f"**카탈로그 랜덤 가격** · {random_price_label(catalog_price)}",
+            f"**전용 랜덤 가격** · {random_price_label(exclusive_price)}",
+        ]
+        container = discord.ui.Container(accent_color=COLOR_VENDING)
+        add_brand_section(container, "\n".join(lines))
+        container.add_item(discord.ui.Separator())
+        container.add_item(
+            discord.ui.ActionRow(
+                RandomDrawButton(cog, "catalog", catalog_price),
+                RandomDrawButton(cog, "exclusive", exclusive_price),
+            )
+        )
+        self.add_item(container)
 
 
 class ArchivePanelView(discord.ui.LayoutView):
@@ -726,6 +801,8 @@ __all__ = [
     "ProductPurchaseModal",
     "ProductSelect",
     "PromotionCodeModal",
+    "RandomDrawButton",
+    "RandomMenuView",
     "RejectChargeModal",
     "SELECT_OPTION_LIMIT",
     "VendingCouponSelect",

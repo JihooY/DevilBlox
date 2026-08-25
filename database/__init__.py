@@ -6,7 +6,13 @@ from .settings import GuildSettingsStore
 from .stock import StockStore
 from .tickets import MiddlemanStore, SellerStore, TicketStore
 from .users import UserStore
-from .vending import ArchiveStore, ProductCategoryStore, ProductStore, VendingLogStore
+from .vending import (
+    ArchiveStore,
+    ProductCategoryStore,
+    ProductStore,
+    RandomProductStore,
+    VendingLogStore,
+)
 from .warnings import WarningStore
 
 
@@ -21,6 +27,7 @@ class Repositories:
         self.lottery = LotteryStore(db)
         self.product_categories = ProductCategoryStore(db)
         self.products = ProductStore(db)
+        self.random_products = RandomProductStore(db)
         self.archives = ArchiveStore(db)
         self.vending = VendingLogStore(db)
         self.stock = StockStore(db)
@@ -39,6 +46,7 @@ class Repositories:
             self.lottery,
             self.product_categories,
             self.products,
+            self.random_products,
             self.archives,
             self.vending,
             self.stock,

@@ -45,6 +45,7 @@ uv run python main.py
 - `COGS_PACKAGE`: Cog 자동 탐색에 사용할 import 패키지입니다. 기본값은 `cogs`이며, 패키지 안에서 `cogs_`로 시작하는 모듈만 확장으로 로드합니다.
 - `DISABLED_COGS`: 비활성화할 Cog 이름 또는 전체 확장 경로를 쉼표로 적습니다.
 - `MESSAGE_CONTENT_INTENT`: 메시지 내용을 읽어야 할 때만 `true`로 설정합니다.
+- `MUSEUM_URL`: `/이벤트시작`이 안내하는 2,000명 기념 역사 박물관 페이지 주소입니다. 소스는 `web/museum/index.html`이며, 직접 호스팅한 뒤 그 주소로 덮어써주세요.
 
 ## 서버 관리와 트래픽 보호
 
