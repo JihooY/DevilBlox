@@ -256,7 +256,7 @@ class VendingStockUnitStore:
         if not product_ids_lower:
             return {}
         counts: dict[str, int] = {}
-        cursor = self.collection.aggregate(
+        cursor = await self.collection.aggregate(
             [
                 {"$match": {"guild_id": guild_id, "product_id_lower": {"$in": product_ids_lower}}},
                 {"$group": {"_id": "$product_id_lower", "count": {"$sum": 1}}},
@@ -277,9 +277,8 @@ class VendingStockUnitStore:
         """
         query = {"guild_id": guild_id, "product_id_lower": normalize_product_id(product_id)}
         for _ in range(8):
-            sampled = await self.collection.aggregate(
-                [{"$match": query}, {"$sample": {"size": 1}}]
-            ).to_list(length=1)
+            cursor = await self.collection.aggregate([{"$match": query}, {"$sample": {"size": 1}}])
+            sampled = await cursor.to_list(length=1)
             if not sampled:
                 return None
             deleted = await self.collection.find_one_and_delete({"_id": sampled[0]["_id"]})
