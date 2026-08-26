@@ -434,7 +434,7 @@ class VerificationCog(commands.Cog):
         embed = discord.Embed(title="VERIFY LOG", color=0x5865F2)
         embed.add_field(name="유저", value=f"{interaction.user.mention} (`{interaction.user.id}`)", inline=False)
         embed.add_field(name="역할", value=role.mention, inline=False)
-        await channel.send(embed=embed)
+        await channel.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
 
     @app_commands.command(name="인증역할", description="인증 성공 시 지급할 역할을 설정합니다.")
     @app_commands.default_permissions(administrator=True)

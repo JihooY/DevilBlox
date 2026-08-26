@@ -327,6 +327,26 @@ class VerifyComponentsTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(kwargs["content"])
         self.assertEqual(kwargs["embeds"], [])
 
+    async def test_verify_log_suppresses_mention_pings(self):
+        role = SimpleNamespace(id=30, mention="<@&30>")
+        channel = SimpleNamespace(send=AsyncMock())
+        guild = SimpleNamespace(id=1, get_channel=lambda _: channel)
+        settings = SimpleNamespace(
+            get=AsyncMock(return_value={"channels": {"verify_log": 99}})
+        )
+        bot = SimpleNamespace(repos=SimpleNamespace(settings=settings), add_view=Mock())
+        cog = VerificationCog(bot)
+        interaction = SimpleNamespace(guild=guild, user=SimpleNamespace(id=2, mention="<@2>"))
+
+        await cog.send_verify_log(interaction, role)
+
+        kwargs = channel.send.await_args.kwargs
+        self.assertEqual(
+            kwargs["allowed_mentions"].to_dict(),
+            discord.AllowedMentions.none().to_dict(),
+        )
+        self.assertIn("<@2>", kwargs["embed"].fields[0].value)
+
     async def test_timeout_edits_same_layout_and_disables_controls(self):
         pad = VerifyPad(SimpleNamespace(), user_id=2, code="1234", gif_name=None)
         pad.message = SimpleNamespace(edit=AsyncMock())

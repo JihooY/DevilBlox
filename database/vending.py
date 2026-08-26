@@ -98,6 +98,22 @@ class ProductCategoryStore:
         )
         return result.modified_count > 0
 
+    async def set_discount_blocked(
+        self,
+        guild_id: int,
+        category_id: str,
+        blocked: bool,
+        updated_by: int | None = None,
+    ) -> dict | None:
+        update = {"discount_blocked": bool(blocked), "updated_at": _now()}
+        if updated_by is not None:
+            update["updated_by"] = updated_by
+        return await self.collection.find_one_and_update(
+            {"_id": category_key(guild_id, category_id), "active": True},
+            {"$set": update},
+            return_document=ReturnDocument.AFTER,
+        )
+
 
 class ProductStore:
     def __init__(self, db):
@@ -201,6 +217,22 @@ class ProductStore:
             {"$set": {"active": False, "deleted_by": deleted_by, "updated_at": _now()}},
         )
         return result.modified_count > 0
+
+    async def set_discount_blocked(
+        self,
+        guild_id: int,
+        product_id: str,
+        blocked: bool,
+        updated_by: int | None = None,
+    ) -> dict | None:
+        update = {"discount_blocked": bool(blocked), "updated_at": _now()}
+        if updated_by is not None:
+            update["updated_by"] = updated_by
+        return await self.collection.find_one_and_update(
+            {"_id": product_key(guild_id, product_id), "active": True},
+            {"$set": update},
+            return_document=ReturnDocument.AFTER,
+        )
 
 
 class VendingStockUnitStore:

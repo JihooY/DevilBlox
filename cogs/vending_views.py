@@ -598,7 +598,7 @@ class ProductMenuView(discord.ui.LayoutView):
 class ProductDetailView(discord.ui.LayoutView):
     def __init__(self, cog: VendingArchiveCog, product: dict, *, owned: bool = False,
                  discounted_price: int | None = None, applied: dict | None = None,
-                 stock_count: int | None = None):
+                 stock_count: int | None = None, discount_blocked: bool = False):
         super().__init__(timeout=180)
         self.cog = cog
         self.product_id = product["product_id"]
@@ -624,6 +624,8 @@ class ProductDetailView(discord.ui.LayoutView):
                 f"할인 금액: **-{discount_amount:,}원**",
                 f"적용 후 가격: **{discounted_price:,}원**",
             ])
+        elif discount_blocked:
+            lines.extend(["", "-# 이 상품은 쿠폰/프로모션을 사용할 수 없습니다."])
         if owned:
             lines.append("이미 구매한 상품입니다. 다운로드 버튼으로 링크를 다시 받을 수 있습니다.")
 
@@ -636,9 +638,11 @@ class ProductDetailView(discord.ui.LayoutView):
             disabled=out_of_stock,
         )
         buy_button.callback = self.buy
-        discount_button = discord.ui.Button(label="쿠폰 / 프로모션", style=discord.ButtonStyle.primary)
-        discount_button.callback = self.discount
-        detail_buttons = [buy_button, discount_button]
+        detail_buttons = [buy_button]
+        if not discount_blocked:
+            discount_button = discord.ui.Button(label="쿠폰 / 프로모션", style=discord.ButtonStyle.primary)
+            discount_button.callback = self.discount
+            detail_buttons.append(discount_button)
         page_url = cog.product_page_url(int(product["guild_id"]), product)
         if page_url:
             detail_buttons.append(discord.ui.Button(label="상품 페이지", style=discord.ButtonStyle.link, url=page_url))

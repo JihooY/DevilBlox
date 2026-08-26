@@ -98,6 +98,16 @@ class VendingCommerceService:
             credit=credit,
         )
 
+    async def discount_blocked_for(self, guild_id: int, product: dict) -> bool:
+        """True if this product (or its category) has coupons/promotions disabled."""
+        if product.get("discount_blocked"):
+            return True
+        category_id = product.get("category_id")
+        if not category_id:
+            return False
+        category = await self.repos.product_categories.get(guild_id, category_id, include_inactive=True)
+        return bool(category and category.get("discount_blocked"))
+
     async def purchase(
         self,
         guild_id: int,
@@ -113,12 +123,15 @@ class VendingCommerceService:
 
         product_id = str(product["product_id"])
         context = f"vending:{normalize_product_id(product_id)}"
-        quoted_price, selected_coupon, selected_promotion = await self.repos.coupons.quote(
-            guild_id,
-            user_id,
-            context,
-            original_price,
-        )
+        if await self.discount_blocked_for(guild_id, product):
+            quoted_price, selected_coupon, selected_promotion = original_price, None, None
+        else:
+            quoted_price, selected_coupon, selected_promotion = await self.repos.coupons.quote(
+                guild_id,
+                user_id,
+                context,
+                original_price,
+            )
         reservation = await self.repos.vending.reserve_product(
             guild_id,
             user_id,
@@ -274,12 +287,15 @@ class VendingCommerceService:
         """
         product_id = str(product["product_id"])
         context = f"vending:{normalize_product_id(product_id)}"
-        quoted_price, selected_coupon, selected_promotion = await self.repos.coupons.quote(
-            guild_id,
-            user_id,
-            context,
-            original_price,
-        )
+        if await self.discount_blocked_for(guild_id, product):
+            quoted_price, selected_coupon, selected_promotion = original_price, None, None
+        else:
+            quoted_price, selected_coupon, selected_promotion = await self.repos.coupons.quote(
+                guild_id,
+                user_id,
+                context,
+                original_price,
+            )
 
         operation_id = f"stock_purchase:{uuid4().hex}"
         price = original_price

@@ -107,6 +107,29 @@ class VendingComponentLayoutTests(unittest.TestCase):
         self.assertTrue(buy_button.disabled)
         self.assertIn("품절", view_text(view))
 
+    def test_product_detail_hides_discount_button_when_blocked(self) -> None:
+        cog = SimpleNamespace(
+            product_thread_mention=lambda product: "`미설정`",
+            product_page_url=lambda guild_id, product: None,
+        )
+        product = {"guild_id": 1, "product_id": "product-a", "title": "상품", "price": 1_000}
+
+        view = ProductDetailView(cog, product, discount_blocked=True)
+
+        self.assertNotIn("쿠폰 / 프로모션", {button.label for button in view_buttons(view)})
+        self.assertIn("쿠폰/프로모션을 사용할 수 없습니다", view_text(view))
+
+    def test_product_detail_shows_discount_button_when_not_blocked(self) -> None:
+        cog = SimpleNamespace(
+            product_thread_mention=lambda product: "`미설정`",
+            product_page_url=lambda guild_id, product: None,
+        )
+        product = {"guild_id": 1, "product_id": "product-a", "title": "상품", "price": 1_000}
+
+        view = ProductDetailView(cog, product, discount_blocked=False)
+
+        self.assertIn("쿠폰 / 프로모션", {button.label for button in view_buttons(view)})
+
     def test_stock_panel_lists_products_with_counts_and_management_buttons(self) -> None:
         products = [
             {"product_id": "stock-a", "product_id_lower": "stock-a", "title": "재고 상품"},
@@ -263,6 +286,45 @@ class VendingComponentCallbackTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertIn("DM을 보낼 수 없어", embed.description)
         self.assertIn("id:pw", embed.fields[0].value)
+
+    async def test_discount_menu_refuses_a_blocked_product(self) -> None:
+        repos = SimpleNamespace(
+            products=SimpleNamespace(get=AsyncMock(return_value={"product_id": "product-a", "discount_blocked": True})),
+        )
+        cog = object.__new__(VendingArchiveCog)
+        cog.bot = SimpleNamespace(repos=repos, get_cog=lambda _name: object())
+        cog.commerce = SimpleNamespace(discount_blocked_for=AsyncMock(return_value=True))
+        interaction = SimpleNamespace(
+            guild=SimpleNamespace(id=1),
+            response=SimpleNamespace(defer=AsyncMock()),
+            followup=SimpleNamespace(send=AsyncMock()),
+        )
+
+        await cog.handle_discount_menu(interaction, "product-a")
+
+        cog.commerce.discount_blocked_for.assert_awaited_once_with(1, {"product_id": "product-a", "discount_blocked": True})
+        kwargs = interaction.followup.send.await_args.kwargs
+        self.assertIn("사용 불가", kwargs["embed"].title)
+
+    async def test_vending_coupon_selection_refuses_a_blocked_product(self) -> None:
+        repos = SimpleNamespace(
+            products=SimpleNamespace(get=AsyncMock(return_value={"product_id": "product-a", "discount_blocked": True})),
+            coupons=SimpleNamespace(select=AsyncMock()),
+        )
+        cog = object.__new__(VendingArchiveCog)
+        cog.bot = SimpleNamespace(repos=repos)
+        cog.commerce = SimpleNamespace(discount_blocked_for=AsyncMock(return_value=True))
+        interaction = SimpleNamespace(
+            guild=SimpleNamespace(id=1),
+            response=SimpleNamespace(defer=AsyncMock()),
+            followup=SimpleNamespace(send=AsyncMock()),
+        )
+
+        await cog.handle_vending_coupon(interaction, "product-a", "HALF")
+
+        repos.coupons.select.assert_not_awaited()
+        kwargs = interaction.followup.send.await_args.kwargs
+        self.assertIn("사용 불가", kwargs["embed"].title)
 
     async def test_stock_add_submit_requires_a_stock_type_product(self) -> None:
         repos = SimpleNamespace(products=SimpleNamespace(get=AsyncMock(return_value={"product_id": "standing-a", "product_type": "standing"})))

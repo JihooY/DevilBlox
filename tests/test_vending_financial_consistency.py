@@ -512,12 +512,28 @@ class _CommerceVendingStock:
         return unit
 
 
-def _commerce_repos(*, cash=2_000, coupon_quantity=0, charge_amount=500, stock_contents=None):
+class _CommerceProductCategories:
+    def __init__(self, categories: dict[str, dict] | None = None):
+        self.categories = categories or {}
+
+    async def get(self, _guild_id, category_id, *, include_inactive=False):
+        return self.categories.get(category_id)
+
+
+def _commerce_repos(
+    *,
+    cash=2_000,
+    coupon_quantity=0,
+    charge_amount=500,
+    stock_contents=None,
+    categories=None,
+):
     return SimpleNamespace(
         users=_CommerceUsers(cash=cash),
         coupons=_CommerceCoupons(quantity=coupon_quantity),
         vending=_CommerceVending(charge_amount=charge_amount),
         vending_stock=_CommerceVendingStock(stock_contents),
+        product_categories=_CommerceProductCategories(categories),
         sellers=_CommerceSellers(),
     )
 
@@ -1053,6 +1069,100 @@ class StockPurchaseServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(repos.users.cash, 400)
         self.assertEqual(len(repos.users.operations), 2)
         self.assertEqual(len(repos.vending.purchase_logs), 2)
+
+
+class DiscountBlockingServiceTests(unittest.IsolatedAsyncioTestCase):
+    @staticmethod
+    def product(*, price=1_000, discount_blocked=False, category_id=None, product_type=None):
+        product = {
+            "product_id": "product-a",
+            "product_id_lower": "product-a",
+            "title": "product-a",
+            "price": price,
+            "terabox_url": "https://example.test/file",
+        }
+        if discount_blocked:
+            product["discount_blocked"] = True
+        if category_id is not None:
+            product["category_id"] = category_id
+        if product_type is not None:
+            product["product_type"] = product_type
+        return product
+
+    async def test_product_level_block_is_detected_without_a_category(self):
+        repos = _commerce_repos()
+        service = VendingCommerceService(repos)
+
+        blocked = await service.discount_blocked_for(1, self.product(discount_blocked=True))
+
+        self.assertTrue(blocked)
+
+    async def test_category_level_block_is_detected_when_the_product_itself_is_not_blocked(self):
+        repos = _commerce_repos(categories={"cat-a": {"category_id": "cat-a", "discount_blocked": True}})
+        service = VendingCommerceService(repos)
+
+        blocked = await service.discount_blocked_for(1, self.product(category_id="cat-a"))
+
+        self.assertTrue(blocked)
+
+    async def test_unblocked_product_and_category_report_not_blocked(self):
+        repos = _commerce_repos(categories={"cat-a": {"category_id": "cat-a", "discount_blocked": False}})
+        service = VendingCommerceService(repos)
+
+        blocked = await service.discount_blocked_for(1, self.product(category_id="cat-a"))
+
+        self.assertFalse(blocked)
+
+    async def test_blocked_product_purchase_ignores_the_selected_coupon(self):
+        repos = _commerce_repos(cash=1_000, coupon_quantity=1)
+        service = VendingCommerceService(repos)
+
+        result = await service.purchase(1, 2, self.product(discount_blocked=True))
+
+        self.assertEqual(result.status, "purchased")
+        self.assertEqual(result.price, 1_000)
+        self.assertIsNone(result.applied_code)
+        self.assertEqual(repos.users.cash, 0)
+        self.assertEqual(repos.coupons.quantity, 1)
+        self.assertFalse(repos.coupons.consumed)
+
+    async def test_blocked_category_purchase_ignores_the_selected_coupon(self):
+        repos = _commerce_repos(
+            cash=1_000,
+            coupon_quantity=1,
+            categories={"cat-a": {"category_id": "cat-a", "discount_blocked": True}},
+        )
+        service = VendingCommerceService(repos)
+
+        result = await service.purchase(1, 2, self.product(category_id="cat-a"))
+
+        self.assertEqual(result.status, "purchased")
+        self.assertEqual(result.price, 1_000)
+        self.assertEqual(repos.coupons.quantity, 1)
+        self.assertFalse(repos.coupons.consumed)
+
+    async def test_blocked_stock_product_purchase_ignores_the_selected_coupon(self):
+        repos = _commerce_repos(cash=1_000, coupon_quantity=1, stock_contents=["id:pw"])
+        service = VendingCommerceService(repos)
+        product = self.product(discount_blocked=True, product_type="stock")
+
+        result = await service.purchase(1, 2, product)
+
+        self.assertEqual(result.status, "purchased")
+        self.assertEqual(result.price, 1_000)
+        self.assertEqual(repos.coupons.quantity, 1)
+        self.assertFalse(repos.coupons.consumed)
+
+    async def test_unblocked_product_purchase_still_applies_the_selected_coupon(self):
+        repos = _commerce_repos(cash=1_000, coupon_quantity=1)
+        service = VendingCommerceService(repos)
+
+        result = await service.purchase(1, 2, self.product())
+
+        self.assertEqual(result.status, "purchased")
+        self.assertEqual(result.price, 500)
+        self.assertEqual(repos.coupons.quantity, 0)
+        self.assertEqual(len(repos.coupons.consumed), 1)
 
 
 if __name__ == "__main__":

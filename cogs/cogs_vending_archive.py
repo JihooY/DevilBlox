@@ -268,6 +268,8 @@ class VendingArchiveCog(commands.Cog):
         if product.get("product_type") == "stock":
             count = await self.repos.vending_stock.count(guild_id, product["product_id"])
             embed.add_field(name="재고", value=f"{count}개" + (" (품절)" if count <= 0 else ""), inline=True)
+        if await self.commerce.discount_blocked_for(guild_id, product):
+            embed.add_field(name="쿠폰/프로모션", value="사용 불가", inline=True)
         seller_id = product.get("seller_id")
         if seller_id:
             embed.add_field(name="셀러", value=f"<@{seller_id}>", inline=True)
@@ -766,16 +768,21 @@ class VendingArchiveCog(commands.Cog):
         if mode == "catalog":
             await interaction.followup.send(embed=await self.build_product_embed(interaction.guild.id, product), ephemeral=True)
             return
-        discounted_price, coupon, promotion = await self.repos.coupons.quote(
-            interaction.guild.id, interaction.user.id,
-            f"vending:{normalize_product_id(product['product_id'])}", int(product.get("price", 0)),
-        )
+        discount_blocked = await self.commerce.discount_blocked_for(interaction.guild.id, product)
+        if discount_blocked:
+            discounted_price, coupon, promotion = int(product.get("price", 0)), None, None
+        else:
+            discounted_price, coupon, promotion = await self.repos.coupons.quote(
+                interaction.guild.id, interaction.user.id,
+                f"vending:{normalize_product_id(product['product_id'])}", int(product.get("price", 0)),
+            )
         stock_count = None
         if product.get("product_type") == "stock":
             stock_count = await self.repos.vending_stock.count(interaction.guild.id, product["product_id"])
         await interaction.followup.send(
             view=ProductDetailView(self, product, owned=owned, discounted_price=discounted_price,
-                                   applied=coupon or promotion, stock_count=stock_count),
+                                   applied=coupon or promotion, stock_count=stock_count,
+                                   discount_blocked=discount_blocked),
             files=branded_files(),
             ephemeral=True,
         )
@@ -1008,6 +1015,10 @@ class VendingArchiveCog(commands.Cog):
         if coupon_cog is None:
             await interaction.response.send_message(embed=error_embed("쿠폰 오류", "쿠폰 시스템이 로드되지 않았습니다."), ephemeral=True); return
         await interaction.response.defer(ephemeral=True)
+        product = await self.repos.products.get(interaction.guild.id, product_id)
+        if product is not None and await self.commerce.discount_blocked_for(interaction.guild.id, product):
+            await interaction.followup.send(embed=error_embed("사용 불가", "이 상품은 쿠폰/프로모션을 사용할 수 없습니다."), ephemeral=True)
+            return
         items = await self.repos.coupons.list_for_user(interaction.guild.id, interaction.user.id, "general")
         try:
             await interaction.delete_original_response()
@@ -1019,19 +1030,31 @@ class VendingArchiveCog(commands.Cog):
         product = await self.repos.products.get(interaction.guild.id, product_id)
         if product is None:
             return
-        price, coupon, promotion = await self.repos.coupons.quote(
-            interaction.guild.id, interaction.user.id,
-            f"vending:{normalize_product_id(product_id)}", int(product.get("price", 0)),
-        )
+        discount_blocked = await self.commerce.discount_blocked_for(interaction.guild.id, product)
+        if discount_blocked:
+            price, coupon, promotion = int(product.get("price", 0)), None, None
+        else:
+            price, coupon, promotion = await self.repos.coupons.quote(
+                interaction.guild.id, interaction.user.id,
+                f"vending:{normalize_product_id(product_id)}", int(product.get("price", 0)),
+            )
         owned = await self.repos.vending.owns_product(interaction.guild.id, interaction.user.id, product_id)
+        stock_count = None
+        if product.get("product_type") == "stock":
+            stock_count = await self.repos.vending_stock.count(interaction.guild.id, product["product_id"])
         await interaction.followup.send(
-            view=ProductDetailView(self, product, owned=owned, discounted_price=price, applied=coupon or promotion),
+            view=ProductDetailView(self, product, owned=owned, discounted_price=price, applied=coupon or promotion,
+                                   stock_count=stock_count, discount_blocked=discount_blocked),
             files=branded_files(),
             ephemeral=True,
         )
 
     async def handle_vending_coupon(self, interaction: discord.Interaction, product_id: str, code: str | None):
         await interaction.response.defer(ephemeral=True)
+        product = await self.repos.products.get(interaction.guild.id, product_id)
+        if product is not None and await self.commerce.discount_blocked_for(interaction.guild.id, product):
+            await interaction.followup.send(embed=error_embed("사용 불가", "이 상품은 쿠폰/프로모션을 사용할 수 없습니다."), ephemeral=True)
+            return
         await self.repos.coupons.select(
             interaction.guild.id, interaction.user.id, f"vending:{normalize_product_id(product_id)}", code
         )
@@ -1043,6 +1066,10 @@ class VendingArchiveCog(commands.Cog):
 
     async def handle_promotion_code(self, interaction: discord.Interaction, product_id: str, code: str):
         await interaction.response.defer(ephemeral=True)
+        product = await self.repos.products.get(interaction.guild.id, product_id)
+        if product is not None and await self.commerce.discount_blocked_for(interaction.guild.id, product):
+            await interaction.followup.send(embed=error_embed("사용 불가", "이 상품은 쿠폰/프로모션을 사용할 수 없습니다."), ephemeral=True)
+            return
         promo = await self.repos.coupons.validate_promotion(interaction.guild.id, interaction.user.id, code)
         if promo is None:
             await interaction.followup.send(embed=error_embed("사용 불가", "해당 프로모션 전용 초대 링크로 가입한 계정만 사용할 수 있습니다."), ephemeral=True); return
@@ -1326,6 +1353,30 @@ class VendingArchiveCog(commands.Cog):
         await self.refresh_vending_panel(interaction.guild)
         await interaction.followup.send(embed=success_embed("상품 카테고리 삭제 완료", f"`{category['category_id']}`"), ephemeral=True)
 
+    @app_commands.command(name="카테고리할인차단", description="카테고리 전체에서 쿠폰/프로모션 사용을 막거나 허용합니다.")
+    @app_commands.default_permissions(send_messages=True)
+    @app_commands.describe(category_id="대상 카테고리 ID", 차단="체크하면 쿠폰/프로모션 사용 금지, 비우면 다시 허용")
+    async def block_category_discount(self, interaction: discord.Interaction, category_id: str, 차단: bool = True):
+        await interaction.response.defer(ephemeral=True)
+        if not await self.staff_allowed(interaction):
+            await interaction.followup.send(embed=error_embed("권한 없음", "셀러 또는 관리자 권한이 필요합니다."), ephemeral=True)
+            return
+        category = await self.repos.product_categories.get(interaction.guild.id, category_id, include_inactive=True)
+        if category is None:
+            await interaction.followup.send(embed=error_embed("카테고리 없음", "해당 카테고리 ID를 찾을 수 없습니다."), ephemeral=True)
+            return
+        updated = await self.repos.product_categories.set_discount_blocked(
+            interaction.guild.id, category_id, 차단, interaction.user.id
+        )
+        if updated is None:
+            await interaction.followup.send(embed=error_embed("처리 실패", "비활성화된 카테고리는 변경할 수 없습니다."), ephemeral=True)
+            return
+        state = "차단" if 차단 else "허용"
+        await interaction.followup.send(
+            embed=success_embed("카테고리 할인 설정 변경", f"`{updated['category_id']}` 쿠폰/프로모션 {state}"),
+            ephemeral=True,
+        )
+
     @app_commands.command(name="상품카테고리목록", description="등록된 자판기 상품 카테고리를 확인합니다.")
     @app_commands.default_permissions(send_messages=True)
     async def list_product_categories(self, interaction: discord.Interaction):
@@ -1337,6 +1388,7 @@ class VendingArchiveCog(commands.Cog):
         lines = [
             f"{category.get('emoji') or ''} `{category['category_id']}` · {category['name']}"
             + (f" · {category['description']}" if category.get("description") else "")
+            + (" · 쿠폰/프로모션 사용 불가" if category.get("discount_blocked") else "")
             for category in categories
         ]
         await interaction.followup.send(embed=info_embed("상품 카테고리 목록", "\n".join(lines)), ephemeral=True)
@@ -1455,6 +1507,33 @@ class VendingArchiveCog(commands.Cog):
             return
         await self.refresh_vending_panel(interaction.guild)
         await interaction.followup.send(embed=success_embed("상품 삭제 완료", f"`{product['product_id']}`"), ephemeral=True)
+
+    @app_commands.command(name="상품할인차단", description="특정 상품에서 쿠폰/프로모션 사용을 막거나 허용합니다.")
+    @app_commands.default_permissions(send_messages=True)
+    @app_commands.describe(product_id="대상 상품 ID", 차단="체크하면 쿠폰/프로모션 사용 금지, 비우면 다시 허용")
+    async def block_product_discount(self, interaction: discord.Interaction, product_id: str, 차단: bool = True):
+        await interaction.response.defer(ephemeral=True)
+        if not await self.staff_allowed(interaction):
+            await interaction.followup.send(embed=error_embed("권한 없음", "셀러 또는 관리자 권한이 필요합니다."), ephemeral=True)
+            return
+        product = await self.repos.products.get(interaction.guild.id, product_id, include_inactive=True)
+        if product is None:
+            await interaction.followup.send(embed=error_embed("상품 없음", "해당 상품 ID를 찾을 수 없습니다."), ephemeral=True)
+            return
+        if not await self.admin_allowed(interaction) and product.get("seller_id") != interaction.user.id:
+            await interaction.followup.send(embed=error_embed("권한 없음", "본인 상품만 변경할 수 있습니다."), ephemeral=True)
+            return
+        updated = await self.repos.products.set_discount_blocked(
+            interaction.guild.id, product_id, 차단, interaction.user.id
+        )
+        if updated is None:
+            await interaction.followup.send(embed=error_embed("처리 실패", "비활성화된 상품은 변경할 수 없습니다."), ephemeral=True)
+            return
+        state = "차단" if 차단 else "허용"
+        await interaction.followup.send(
+            embed=success_embed("상품 할인 설정 변경", f"`{updated['product_id']}` 쿠폰/프로모션 {state}"),
+            ephemeral=True,
+        )
 
     @app_commands.command(name="상품조회", description="상품 ID로 자판기 상품 정보를 조회합니다.")
     @app_commands.default_permissions(send_messages=True)
@@ -1666,12 +1745,14 @@ class VendingArchiveCog(commands.Cog):
     @delete_product_category.autocomplete("category_id")
     @product_list.autocomplete("category_id")
     @register_product.autocomplete("category_id")
+    @block_category_discount.autocomplete("category_id")
     async def category_autocomplete(self, interaction: discord.Interaction, current: str):
         return await self.autocomplete_categories(interaction, current)
 
     @delete_product.autocomplete("product_id")
     @product_info.autocomplete("product_id")
     @add_archive.autocomplete("product_id")
+    @block_product_discount.autocomplete("product_id")
     async def product_autocomplete(self, interaction: discord.Interaction, current: str):
         return await self.autocomplete_products(interaction, current)
 
