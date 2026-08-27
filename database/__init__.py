@@ -1,3 +1,6 @@
+import os
+
+from .brokerage import BrokerageStore
 from .coupons import CouponStore
 from .lottery import LotteryStore
 from .operations import OperationsStateStore
@@ -23,6 +26,10 @@ class Repositories:
         self.tickets = TicketStore(db)
         self.sellers = SellerStore(db)
         self.middlemen = MiddlemanStore(db)
+        self.brokerage = BrokerageStore(
+            db,
+            verification_pepper=os.getenv("BROKERAGE_VERIFICATION_PEPPER", ""),
+        )
         self.coupons = CouponStore(db)
         self.lottery = LotteryStore(db)
         self.product_categories = ProductCategoryStore(db)
@@ -42,6 +49,7 @@ class Repositories:
             self.tickets,
             self.sellers,
             self.middlemen,
+            self.brokerage,
             self.coupons,
             self.lottery,
             self.product_categories,

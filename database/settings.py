@@ -10,6 +10,8 @@ ROLE_KEYS = {
     "customer": "고객",
     "seller": "셀러",
     "middleman": "중개자",
+    "brokerage_helper": "거래중개 도우미",
+    "brokerage_alert": "거래중개 알림",
     "vip": "VIP",
     "vvip": "VVIP",
     "svip": "SVIP",
@@ -24,6 +26,11 @@ CHANNEL_KEYS = {
     "account": "계정 정보",
     "support": "문의",
     "middleman": "중개",
+    "brokerage": "거래중개 게시판",
+    "brokerage_panel": "거래중개 통합 패널",
+    "brokerage_admin": "거래중개 관리",
+    "brokerage_log": "거래중개 로그",
+    "brokerage_report": "거래중개 신고",
     "alarm": "알림",
     "verify_log": "인증 로그",
     "join_leave_log": "입퇴장 로그",
@@ -54,6 +61,8 @@ CATEGORY_KEYS = {
     "support_closed": "문의 종료",
     "middleman": "중개",
     "middleman_closed": "중개 종료",
+    "brokerage_ticket": "거래중개 티켓",
+    "brokerage_closed": "거래중개 종료",
 }
 
 LEGACY_SETTING_MAP = {
@@ -122,6 +131,8 @@ def default_settings(guild_id: int) -> dict:
             "account_panel_message_id": None,
             "alarm_panel_message_id": None,
             "middleman_panel_message_id": None,
+            "brokerage_panel_message_id": None,
+            "brokerage_admin_panel_message_id": None,
             "purchase_panel_message_id": None,
             "vending_panel_message_id": None,
             "vending_stock_panel_message_id": None,

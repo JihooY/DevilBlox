@@ -14,6 +14,10 @@ class CogDiscoveryTests(unittest.TestCase):
         self.assertTrue(
             all(name.rsplit(".", 1)[-1].startswith("cogs_") for name in extensions)
         )
+        self.assertEqual(
+            [name for name in extensions if "brokerage" in name],
+            ["cogs.cogs_brokerage"],
+        )
 
 
 if __name__ == "__main__":

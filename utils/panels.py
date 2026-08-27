@@ -26,6 +26,8 @@ PANEL_LOCATIONS = (
     ("alarm", "alarm_panel_message_id"),
     ("archive", "archive_panel_message_id"),
     ("middleman", "middleman_panel_message_id"),
+    ("brokerage_panel", "brokerage_panel_message_id"),
+    ("brokerage_admin", "brokerage_admin_panel_message_id"),
     ("purchase", "purchase_panel_message_id"),
     ("stock_condition", "stock_condition_message_id"),
     ("stock_control", "stock_control_message_id"),
