@@ -52,6 +52,7 @@ class BrokerageProfileMixin:
                     "successful_trade_operation_ids": [],
                     "verified_kinds": [],
                     "score_operation_ids": [],
+                    "score_operation_results": [],
                     "problem_operation_ids": [],
                     "problem_count_operation_ids": [],
                     "resolved_problem_ids": [],
@@ -144,6 +145,13 @@ class BrokerageProfileMixin:
                 raise ValueError("operation_id is already used for a different score adjustment")
             effective_delta = int(ledger.get("delta", 0))
 
+        score_before_expression = {"$ifNull": ["$trust_score", 0]}
+        score_after_expression = {
+            "$max": [
+                -100,
+                {"$min": [100, {"$add": [score_before_expression, effective_delta]}]},
+            ]
+        }
         updated = await self.profiles.find_one_and_update(
             {
                 "_id": _profile_key(guild_id, user_id),
@@ -153,15 +161,30 @@ class BrokerageProfileMixin:
                 {
                     "$set": {
                         "trust_score": {
-                            "$max": [
-                                -100,
-                                {"$min": [100, {"$add": [{"$ifNull": ["$trust_score", 0]}, effective_delta]}]},
-                            ]
+                            **score_after_expression
                         },
                         "score_operation_ids": {
                             "$concatArrays": [
                                 {"$ifNull": ["$score_operation_ids", []]},
                                 [operation_id],
+                            ]
+                        },
+                        "score_operation_results": {
+                            "$concatArrays": [
+                                {"$ifNull": ["$score_operation_results", []]},
+                                [
+                                    {
+                                        "operation_id": operation_id,
+                                        "score_before": score_before_expression,
+                                        "score_after": score_after_expression,
+                                        "applied_delta": {
+                                            "$subtract": [
+                                                score_after_expression,
+                                                score_before_expression,
+                                            ]
+                                        },
+                                    }
+                                ],
                             ]
                         },
                         "updated_at": now,
@@ -174,6 +197,32 @@ class BrokerageProfileMixin:
             updated = await self.get_profile(guild_id, user_id)
         if updated is None:
             raise RuntimeError("brokerage score adjustment could not be applied")
+        operation_result = next(
+            (
+                item
+                for item in reversed(updated.get("score_operation_results", []))
+                if item.get("operation_id") == operation_id
+            ),
+            None,
+        )
+        applied_delta = int(
+            (operation_result or {}).get(
+                "applied_delta", ledger.get("applied_delta", effective_delta)
+            )
+        )
+        ledger_updates: dict[str, Any] = {
+            "applied_delta": applied_delta,
+            "applied_at": now,
+        }
+        if operation_result:
+            ledger_updates.update(
+                score_before=int(operation_result.get("score_before", 0)),
+                score_after=int(operation_result.get("score_after", 0)),
+            )
+        await self.score_ledger.update_one(
+            {"_id": ledger_id}, {"$set": ledger_updates}
+        )
+        ledger.update(ledger_updates)
         await self.refresh_listing_intervals(
             guild_id,
             seller_id=user_id,
@@ -184,7 +233,8 @@ class BrokerageProfileMixin:
             "ledger": ledger,
             "applied": bool(updated and operation_id in updated.get("score_operation_ids", [])),
             "new_operation": inserted,
-            "delta": effective_delta,
+            "delta": applied_delta,
+            "effective_delta": effective_delta,
         }
 
     async def add_problem(
@@ -291,10 +341,10 @@ class BrokerageProfileMixin:
                 metadata={"problem_id": problem_id, "listing_id": listing_id, "amount": amount},
             )
         if listing_id:
-            await self.listings.update_one(
+            previous_listing = await self.listings.find_one_and_update(
                 {
                     "_id": listing_id,
-                    "settlement.status": "pending",
+                    "settlement.status": {"$in": ["pending", "processing", "success"]},
                 },
                 {
                     "$set": {
@@ -303,7 +353,16 @@ class BrokerageProfileMixin:
                         "updated_at": now,
                     }
                 },
+                return_document=ReturnDocument.BEFORE,
             )
+            if previous_listing is not None and (
+                previous_listing.get("settlement") or {}
+            ).get("status") in {"processing", "success"}:
+                await self.reverse_settlement_awards(
+                    previous_listing,
+                    problem_id=problem_id,
+                    actor_id=created_by,
+                )
         fresh = await self.problems.find_one({"_id": problem_id}) or problem
         return {"problem": fresh, "profile": profile, "score": score_result}
 
@@ -388,7 +447,14 @@ class BrokerageProfileMixin:
                 ledger = await self.score_ledger.find_one(
                     {"_id": _ledger_key(guild_id, user_id, f"problem:{problem_id}:deduction")}
                 )
-                restore = abs(int((ledger or {}).get("delta", problem.get("base_points", 0))))
+                restore = abs(
+                    int(
+                        (ledger or {}).get(
+                            "applied_delta",
+                            (ledger or {}).get("delta", problem.get("base_points", 0)),
+                        )
+                    )
+                )
                 score_result = await self.adjust_profile(
                     guild_id,
                     user_id,
@@ -409,6 +475,17 @@ class BrokerageProfileMixin:
                 }
             )
             if remaining == 0:
+                listing = await self.get_listing(str(listing_id))
+                settlement_problem_id = str(
+                    ((listing or {}).get("settlement") or {}).get("problem_id")
+                    or problem_id
+                )
+                if listing is not None:
+                    await self.restore_settlement_awards(
+                        listing,
+                        problem_id=settlement_problem_id,
+                        actor_id=resolved_by,
+                    )
                 await self.listings.update_one(
                     {
                         "_id": listing_id,

@@ -29,6 +29,116 @@ from .core import (
 
 
 class BrokerageSettlementMixin:
+    @staticmethod
+    def _settlement_score_operation_ids(listing: Mapping[str, Any]) -> tuple[str, str]:
+        settlement = listing.get("settlement") or {}
+        base = str(
+            settlement.get("operation_id")
+            or f"listing:{listing['_id']}:settlement"
+        )
+        return (
+            str(settlement.get("seller_score_operation_id") or f"{base}:seller"),
+            str(settlement.get("buyer_score_operation_id") or f"{base}:buyer"),
+        )
+
+    async def reverse_settlement_awards(
+        self,
+        listing: Mapping[str, Any],
+        *,
+        problem_id: str,
+        actor_id: int | None,
+    ) -> list[dict]:
+        """Compensate any settlement awards that raced with a reported problem."""
+
+        guild_id = int(listing["guild_id"])
+        seller_operation, buyer_operation = self._settlement_score_operation_ids(listing)
+        results: list[dict] = []
+        problem_token = hashlib.sha256(problem_id.encode("utf-8")).hexdigest()[:16]
+        for role, user_id, original_operation in (
+            ("seller", int(listing["seller_id"]), seller_operation),
+            ("buyer", int(listing.get("sold_to", 0) or 0), buyer_operation),
+        ):
+            if user_id <= 0:
+                continue
+            original = await self.score_ledger.find_one(
+                {"_id": _ledger_key(guild_id, user_id, original_operation)}
+            )
+            awarded = int(
+                (original or {}).get(
+                    "applied_delta", (original or {}).get("delta", 0)
+                )
+            )
+            if awarded <= 0:
+                continue
+            result = await self.adjust_profile(
+                guild_id,
+                user_id,
+                -awarded,
+                operation_id=(
+                    f"settlement-reversal:{listing['_id']}:{role}:{problem_token}"
+                ),
+                reason="settlement_problem_reversal",
+                actor_id=actor_id,
+                metadata={
+                    "listing_id": str(listing["_id"]),
+                    "problem_id": problem_id,
+                    "original_operation_id": original_operation,
+                },
+            )
+            results.append(result)
+        return results
+
+    async def restore_settlement_awards(
+        self,
+        listing: Mapping[str, Any],
+        *,
+        problem_id: str,
+        actor_id: int | None,
+    ) -> list[dict]:
+        """Undo race compensation when the last listing problem is overturned."""
+
+        guild_id = int(listing["guild_id"])
+        problem_token = hashlib.sha256(problem_id.encode("utf-8")).hexdigest()[:16]
+        results: list[dict] = []
+        for role, user_id in (
+            ("seller", int(listing["seller_id"])),
+            ("buyer", int(listing.get("sold_to", 0) or 0)),
+        ):
+            if user_id <= 0:
+                continue
+            reversal_operation = (
+                f"settlement-reversal:{listing['_id']}:{role}:{problem_token}"
+            )
+            reversal = await self.score_ledger.find_one(
+                {"_id": _ledger_key(guild_id, user_id, reversal_operation)}
+            )
+            reversed_amount = abs(
+                int(
+                    (reversal or {}).get(
+                        "applied_delta", (reversal or {}).get("delta", 0)
+                    )
+                )
+            )
+            if reversed_amount <= 0:
+                continue
+            result = await self.adjust_profile(
+                guild_id,
+                user_id,
+                reversed_amount,
+                operation_id=(
+                    f"settlement-restoration:{listing['_id']}:{role}:{problem_token}"
+                ),
+                reason="settlement_problem_overturned",
+                actor_id=actor_id,
+                metadata={
+                    "listing_id": str(listing["_id"]),
+                    "problem_id": problem_id,
+                    "reversal_operation_id": reversal_operation,
+                },
+            )
+            results.append(result)
+        return results
+
     async def list_due_settlements(
         self,
         now: datetime | None = None,
@@ -222,6 +332,33 @@ class BrokerageSettlementMixin:
         )
         if updated is None:
             updated = await self.get_listing(listing_id)
+            if (updated or {}).get("settlement", {}).get("status") == "problem":
+                problem_id = str(
+                    (updated.get("settlement") or {}).get("problem_id")
+                    or f"listing:{listing_id}:problem"
+                )
+                await self.reverse_settlement_awards(
+                    updated,
+                    problem_id=problem_id,
+                    actor_id=actor_id,
+                )
+                updated = await self.get_listing(listing_id)
+                return {
+                    "listing": updated,
+                    "score": None,
+                    "seller_score": None,
+                    "buyer_score": None,
+                    "already_settled": False,
+                    "blocked_by_problem": True,
+                }
+            if (updated or {}).get("settlement", {}).get("status") == "success":
+                return {
+                    "listing": updated,
+                    "score": None,
+                    "seller_score": None,
+                    "buyer_score": None,
+                    "already_settled": True,
+                }
         return {
             "listing": updated,
             "score": seller_score,

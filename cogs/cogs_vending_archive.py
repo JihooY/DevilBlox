@@ -45,6 +45,7 @@ from database.vending import (
     normalize_product_id,
 )
 from services.vending import VendingCommerceService
+from services.vending_topup import TopupPendingError
 from utils.embeds import (
     BRAND_LOGO_FILENAME,
     branded_files,
@@ -268,6 +269,12 @@ class VendingArchiveCog(commands.Cog):
         if product.get("product_type") == "stock":
             count = await self.repos.vending_stock.count(guild_id, product["product_id"])
             embed.add_field(name="재고", value=f"{count}개" + (" (품절)" if count <= 0 else ""), inline=True)
+        if product.get("topup_enabled"):
+            if product.get("topup_kind", "tokens") == "plan":
+                delivery = f"{product.get('topup_plan', '').upper()} 플랜 {int(product.get('topup_months', 0))}개월"
+            else:
+                delivery = f"{int(product.get('topup_tokens', 0)):,} 토큰"
+            embed.add_field(name="API 지급", value=delivery, inline=True)
         if await self.commerce.discount_blocked_for(guild_id, product):
             embed.add_field(name="쿠폰/프로모션", value="사용 불가", inline=True)
         seller_id = product.get("seller_id")
@@ -798,11 +805,19 @@ class VendingArchiveCog(commands.Cog):
             await interaction.followup.send(embed=error_embed("상품 없음", "해당 상품 ID를 찾을 수 없습니다."), ephemeral=True)
             return
 
-        result = await self.commerce.purchase(
-            interaction.guild.id,
-            interaction.user.id,
-            product,
-        )
+        try:
+            result = await self.commerce.purchase(
+                interaction.guild.id,
+                interaction.user.id,
+                product,
+            )
+        except TopupPendingError:
+            await interaction.followup.send(
+                embed=error_embed("지급 확인 대기", "결제한 주문의 지급 완료를 확인하지 못했습니다. 같은 상품의 구매 버튼을 다시 누르면 기존 주문번호로 재시도합니다. 추가 결제되지 않습니다."),
+                ephemeral=True,
+            )
+            return
+        product = result.product
         if result.status == "already_owned":
             await interaction.followup.send(embed=self.build_download_embed(product), ephemeral=True)
             return
@@ -873,6 +888,16 @@ class VendingArchiveCog(commands.Cog):
                 purchased_at=log_doc.get("purchased_at"),
                 amount=price,
             )
+        if product.get("topup_enabled"):
+            if product.get("topup_kind", "tokens") == "plan":
+                delivery = f"{product['topup_plan'].upper()} 플랜 {int(product['topup_months'])}개월"
+            else:
+                delivery = f"{int(product['topup_tokens']):,} 토큰"
+            await interaction.followup.send(
+                embed=success_embed("API 지급 완료", f"{delivery} 지급을 완료했습니다.\n주문번호: `{result.operation_id}`"),
+                ephemeral=True,
+            )
+            return
         if product.get("product_type") == "stock":
             await interaction.followup.send(
                 embed=await self.deliver_stock_unit(interaction, product, result.stock_unit),
@@ -1107,6 +1132,7 @@ class VendingArchiveCog(commands.Cog):
                 "user_id": interaction.user.id,
                 "product_id_lower": {"$in": product_ids_lower},
                 "status": "purchased",
+                "topup_enabled": {"$ne": True},
             }
         ).to_list(length=25)
         owned_by_id = {owned["product_id_lower"]: owned for owned in owned_products}
@@ -1395,6 +1421,18 @@ class VendingArchiveCog(commands.Cog):
 
     @app_commands.command(name="상품등록", description="자판기 상품을 등록하거나 수정합니다.")
     @app_commands.default_permissions(send_messages=True)
+    @app_commands.choices(
+        plan=[
+            app_commands.Choice(name="Plus", value="plus"),
+            app_commands.Choice(name="Pro", value="pro"),
+        ],
+        months=[
+            app_commands.Choice(name="1개월", value=1),
+            app_commands.Choice(name="2개월", value=2),
+            app_commands.Choice(name="3개월", value=3),
+            app_commands.Choice(name="6개월", value=6),
+        ],
+    )
     @app_commands.describe(
         product_id="자판기에서 사용할 상품 ID",
         price="상품 가격",
@@ -1406,6 +1444,10 @@ class VendingArchiveCog(commands.Cog):
         thread_id="상품 설명 쓰레드 ID 또는 멘션",
         page_url="상품 설명 페이지 URL",
         seller="상품 셀러",
+        api_on="토큰/플랜 지급 API ON/OFF (상시 판매 상품 전용)",
+        tokens="토큰 상품일 때 충전할 토큰 수",
+        plan="플랜 상품일 때 plus 또는 pro",
+        months="플랜 적용 개월: 1, 2, 3, 6",
     )
     async def register_product(
         self,
@@ -1420,6 +1462,10 @@ class VendingArchiveCog(commands.Cog):
         thread_id: str = "",
         page_url: str = "",
         seller: discord.Member | None = None,
+        api_on: bool = False,
+        tokens: int = 0,
+        plan: str = "",
+        months: int = 0,
     ):
         await interaction.response.defer(ephemeral=True)
         if not await self.staff_allowed(interaction):
@@ -1432,7 +1478,17 @@ class VendingArchiveCog(commands.Cog):
             await interaction.followup.send(embed=error_embed("가격 오류", "가격은 0원 이상이어야 합니다."), ephemeral=True)
             return
         product_type = "stock" if 재고형 else "standing"
-        if product_type == "standing" and not is_http_url(terabox_url):
+        plan = plan.strip().casefold()
+        if api_on and 재고형:
+            await interaction.followup.send(embed=error_embed("API 설정 오류", "API 상품은 재고형을 끄고 등록해주세요."), ephemeral=True)
+            return
+        if api_on and plan and (plan not in {"plus", "pro"} or months not in {1, 2, 3, 6}):
+            await interaction.followup.send(embed=error_embed("플랜 설정 오류", "plan은 plus/pro, months는 1/2/3/6 중 하나로 입력해주세요."), ephemeral=True)
+            return
+        if api_on and not plan and tokens <= 0:
+            await interaction.followup.send(embed=error_embed("토큰 설정 오류", "토큰 상품은 tokens를 1 이상 입력해주세요."), ephemeral=True)
+            return
+        if product_type == "standing" and not api_on and not is_http_url(terabox_url):
             await interaction.followup.send(
                 embed=error_embed("링크 오류", "상시 판매 상품은 테라박스 링크(http 또는 https URL)가 필요합니다."),
                 ephemeral=True,
@@ -1476,11 +1532,22 @@ class VendingArchiveCog(commands.Cog):
             thread_id=parse_discord_id(thread_id),
             page_url=page_url,
             product_type=product_type,
+            topup_enabled=api_on,
+            topup_tokens=tokens,
+            topup_plan=plan,
+            topup_months=months,
             created_by=interaction.user.id,
         )
         await self.refresh_vending_panel(interaction.guild)
         type_label = "재고형" if product_type == "stock" else "상시 판매"
         note = "\n-# 재고 패널에서 재고를 추가해야 구매할 수 있습니다." if product_type == "stock" else ""
+        if api_on and plan:
+            api_label = f"ON · {plan.upper()} 플랜 {months}개월"
+        elif api_on:
+            api_label = f"ON · {tokens} 토큰"
+        else:
+            api_label = "OFF"
+        note += f"\nAPI 지급: {api_label}"
         await interaction.followup.send(
             embed=success_embed("상품 등록 완료", f"`{product['product_id']}` -> {category['name']} ({type_label}){note}"),
             ephemeral=True,

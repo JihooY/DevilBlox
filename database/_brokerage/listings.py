@@ -302,6 +302,7 @@ class BrokerageListingMixin:
                     "updated_at": now,
                     "active_ticket_channel_id": None,
                     "active_ticket_message_id": None,
+                    "current_reservation_expires_at": None,
                 }
             },
             return_document=ReturnDocument.AFTER,

@@ -65,6 +65,8 @@ uv run python main.py
 - 완료 후 7일 동안 구매자가 1~5점 후기와 내용을 남길 수 있고, 2점 이하는 문제 1회로 집계됩니다. 별점 테러 등 오판은 관리 패널에서 신용도와 문제 횟수를 정정할 수 있습니다.
 - 문제 1~3회에는 추가 배율이 없고 4회부터 패널티 1단계가 시작됩니다. 다음 감점은 단계마다 10%씩 커집니다(4회 10%, 5회 20%).
 - 게시 재등록 주기는 신용도 `80 이상 10분`, `50~79 20분`, `0~49 30분`, `-1 이하 60분`입니다. 좋아요 보상과 재등록 단축 기준도 관리 패널에서 변경할 수 있습니다.
+- 예약 활성 순번은 기본 30분 동안 유지되며 `/거래중개설정`의 `예약제한분`으로 5~1,440분 사이에서 변경할 수 있습니다. 시간이 지나면 다음 예약자로 자동 전환됩니다.
+- 등록 화면의 수량은 분할 재고가 아니라 한 번에 거래할 묶음 전체 수량입니다. 한 게시물은 한 번의 완료·후기·정산으로 처리됩니다.
 - 이메일 인증은 10점, 전화번호 인증은 20점을 한 번 지급합니다.
 
 본인 인증을 사용하려면 `.env`에 `BROKERAGE_VERIFICATION_PEPPER`를 긴 무작위 비밀값으로 반드시 지정합니다. 이메일은 `BROKERAGE_SMTP_HOST`, `BROKERAGE_SMTP_PORT`, `BROKERAGE_SMTP_USERNAME`, `BROKERAGE_SMTP_PASSWORD`, `BROKERAGE_SMTP_FROM`, `BROKERAGE_SMTP_USE_TLS`를, SMS는 `BROKERAGE_TWILIO_ACCOUNT_SID`, `BROKERAGE_TWILIO_AUTH_TOKEN`, `BROKERAGE_TWILIO_FROM_NUMBER`를 설정합니다. 이메일·전화번호·인증번호 원문은 저장하지 않으며, 중복 확인용 HMAC 해시와 마스킹된 표시값만 보관합니다.

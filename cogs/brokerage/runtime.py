@@ -110,9 +110,7 @@ class BrokerageRuntimeMixin:
             setattr(self.bot, "_devilblox_brokerage_view_ids", registered)
         persistent: dict[str, list[dict]] = {}
         try:
-            persistent = await self.repos.brokerage.list_pending_persistent_objects(
-                limit=500
-            )
+            persistent = await self.repos.brokerage.list_pending_persistent_objects()
             listings = persistent.get("listings", [])
         except Exception:
             log.exception("Failed to load persistent brokerage listings")

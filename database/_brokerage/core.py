@@ -53,6 +53,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "max_price_points": 10,
     "settlement_delay_days": 7,
     "review_window_days": 7,
+    "reservation_timeout_minutes": 30,
     "email_verification_bonus": 10,
     "phone_verification_bonus": 20,
     "low_rating_problem_threshold": 2,
@@ -83,6 +84,7 @@ _CONFIG_INT_RANGES: dict[str, tuple[int, int]] = {
     "max_price_points": (1, 100),
     "settlement_delay_days": (1, 90),
     "review_window_days": (1, 90),
+    "reservation_timeout_minutes": (5, 24 * 60),
     "email_verification_bonus": (0, 100),
     "phone_verification_bonus": (0, 100),
     "low_rating_problem_threshold": (1, 5),
@@ -398,18 +400,26 @@ class BrokerageCore:
         await self.refresh_listing_intervals(guild_id, config=updated_config)
         return updated_config
 
-    async def list_pending_persistent_objects(self, *, limit: int = 500) -> dict[str, list[dict]]:
-        capped = max(1, min(2_000, int(limit)))
+    async def list_pending_persistent_objects(
+        self, *, limit: int | None = None
+    ) -> dict[str, list[dict]]:
+        # Persistent component registration must not silently stop at an
+        # arbitrary global boundary: every active object needs a handler after
+        # a restart.  Callers may still request a bounded diagnostic sample.
+        capped = None if limit is None else max(1, min(10_000, int(limit)))
         listings = await self.listings.find(
             {"status": {"$in": ["open", "reserved"]}}
         ).sort("created_at", 1).to_list(length=capped)
         settlements = await self.listings.find(
             {"status": "sold", "settlement.status": "pending"}
         ).sort("settlement.due_at", 1).to_list(length=capped)
-        reviews = await self.list_pending_reviews(limit=capped)
-        problems = await self.list_pending_problems(limit=capped)
-        reports = await self.list_pending_reports(limit=capped)
-        verifications = await self.list_pending_verifications(limit=capped)
+        reviews = await self.reviews.find({"status": "pending"}).sort(
+            "expires_at", 1
+        ).to_list(length=capped)
+        sample_limit = capped or 2_000
+        problems = await self.list_pending_problems(limit=sample_limit)
+        reports = await self.list_pending_reports(limit=sample_limit)
+        verifications = await self.list_pending_verifications(limit=sample_limit)
         return {
             "listings": listings,
             "settlements": settlements,

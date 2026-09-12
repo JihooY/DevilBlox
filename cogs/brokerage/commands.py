@@ -73,6 +73,7 @@ log = logging.getLogger(__name__)
 
 class BrokerageCommandMixin:
     @app_commands.command(name="거래중개패널", description="현재 채널에 거래중개 통합 패널을 생성합니다.")
+    @app_commands.guild_only()
     @app_commands.default_permissions(administrator=True)
     async def brokerage_panel(self, interaction: discord.Interaction) -> None:
         if not await self.is_admin(interaction):
@@ -97,6 +98,7 @@ class BrokerageCommandMixin:
         )
 
     @app_commands.command(name="거래중개관리패널", description="현재 채널에 거래중개 관리 패널을 생성합니다.")
+    @app_commands.guild_only()
     @app_commands.default_permissions(administrator=True)
     async def brokerage_admin_panel(self, interaction: discord.Interaction) -> None:
         if not await self.is_admin(interaction):
@@ -121,6 +123,7 @@ class BrokerageCommandMixin:
         )
 
     @app_commands.command(name="신용도조정", description="거래 신용도와 문제 횟수를 관리자가 조정합니다.")
+    @app_commands.guild_only()
     @app_commands.default_permissions(administrator=True)
     async def credit_adjust_command(
         self,
@@ -139,6 +142,7 @@ class BrokerageCommandMixin:
         )
 
     @app_commands.command(name="거래삭제", description="등록된 거래를 관리자가 삭제합니다.")
+    @app_commands.guild_only()
     @app_commands.default_permissions(administrator=True)
     async def delete_listing_command(
         self,
@@ -149,6 +153,7 @@ class BrokerageCommandMixin:
         await self.admin_delete_listing(interaction, 거래id.strip(), 사유)
 
     @app_commands.command(name="거래문제처리", description="환불·회수 등 거래 문제를 기록하고 신용도를 차감합니다.")
+    @app_commands.guild_only()
     @app_commands.default_permissions(administrator=True)
     @app_commands.choices(
         유형=[
@@ -232,6 +237,7 @@ class BrokerageCommandMixin:
         )
 
     @app_commands.command(name="거래문제해결", description="거래 문제 기록을 유지하거나 오판으로 취소합니다.")
+    @app_commands.guild_only()
     @app_commands.default_permissions(administrator=True)
     async def resolve_problem_command(
         self,
@@ -285,6 +291,7 @@ class BrokerageCommandMixin:
         )
 
     @app_commands.command(name="거래후기수정", description="별점 테러 등 거래 후기를 관리자가 정정합니다.")
+    @app_commands.guild_only()
     @app_commands.default_permissions(administrator=True)
     async def review_override_command(
         self,
@@ -343,6 +350,7 @@ class BrokerageCommandMixin:
         )
 
     @app_commands.command(name="거래중개설정", description="가격 점수와 좋아요 기준을 빠르게 변경합니다.")
+    @app_commands.guild_only()
     @app_commands.default_permissions(administrator=True)
     async def config_command(
         self,
@@ -350,6 +358,7 @@ class BrokerageCommandMixin:
         점수당금액: app_commands.Range[int, 1, 1_000_000_000],
         좋아요기준: app_commands.Range[int, 1, 1_000_000] = 10,
         등록최소신용도: app_commands.Range[int, -100, 100] = -100,
+        예약제한분: app_commands.Range[int, 5, 1440] | None = None,
     ) -> None:
         current = await self.repos.brokerage.get_config(interaction.guild.id)
         values = {
@@ -358,10 +367,16 @@ class BrokerageCommandMixin:
             "minimum_listing_score": int(등록최소신용도),
             "bump_intervals": current.get("bump_intervals"),
             "like_bump_reduction_minutes": current.get("like_bump_reduction_minutes", 10),
+            "reservation_timeout_minutes": (
+                int(예약제한분)
+                if 예약제한분 is not None
+                else current.get("reservation_timeout_minutes", 30)
+            ),
         }
         await self.update_config(interaction, values)
 
     @app_commands.command(name="거래인증코드", description="발급받은 이메일/전화번호 인증 코드를 입력합니다.")
+    @app_commands.guild_only()
     @app_commands.choices(
         종류=[
             app_commands.Choice(name="이메일", value="email"),

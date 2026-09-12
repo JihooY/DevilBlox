@@ -83,7 +83,7 @@ class BrokerageListingModal(discord.ui.Modal):
             max_length=12,
         )
         self.quantity_input = discord.ui.TextInput(
-            label="수량",
+            label="일괄 거래 수량",
             placeholder="예: 1",
             default="1",
             min_length=1,

@@ -46,6 +46,12 @@ class BrokerageFileSizePolicyTests(unittest.TestCase):
 
         self.assertEqual(actual, expected)
 
+    def test_every_brokerage_command_is_guild_only(self) -> None:
+        self.assertTrue(BrokerageCog.__cog_app_commands__)
+        self.assertTrue(
+            all(command.guild_only for command in BrokerageCog.__cog_app_commands__)
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

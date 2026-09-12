@@ -33,6 +33,13 @@ class BrokerageReservationMixin:
         listing_id = _clean_text(listing_id, "listing_id", maximum=100, required=True)
         buyer_id = _require_id(buyer_id, "buyer_id")
         now = _now()
+        existing = await self.get_listing(listing_id)
+        if existing is None:
+            return None
+        config = await self.get_config(int(existing["guild_id"]))
+        reservation_expires_at = now + timedelta(
+            minutes=int(config["reservation_timeout_minutes"])
+        )
         listing = await self.listings.find_one_and_update(
             {
                 "_id": listing_id,
@@ -82,6 +89,13 @@ class BrokerageReservationMixin:
                             "$ifNull": [
                                 "$current_reservation_number",
                                 {"$add": [{"$ifNull": ["$queue_seq", 0]}, 1]},
+                            ]
+                        },
+                        "current_reservation_expires_at": {
+                            "$cond": [
+                                {"$eq": [{"$ifNull": ["$current_buyer_id", None]}, None]},
+                                reservation_expires_at,
+                                "$current_reservation_expires_at",
                             ]
                         },
                         "status": "reserved",
@@ -150,6 +164,93 @@ class BrokerageReservationMixin:
             {"$set": updates},
             return_document=ReturnDocument.AFTER,
         )
+
+    async def release_active_ticket_binding(
+        self,
+        listing_id: str,
+        buyer_id: int,
+        channel_id: int,
+    ) -> bool:
+        """Roll back a ticket binding after the surrounding ticket setup fails."""
+
+        result = await self.listings.update_one(
+            {
+                "_id": _clean_text(listing_id, "listing_id", maximum=100, required=True),
+                "status": "reserved",
+                "current_buyer_id": _require_id(buyer_id, "buyer_id"),
+                "active_ticket_channel_id": _require_id(channel_id, "channel_id"),
+            },
+            {
+                "$set": {
+                    "active_ticket_channel_id": None,
+                    "active_ticket_message_id": None,
+                    "active_ticket_buyer_id": None,
+                    "active_ticket_bound_at": None,
+                    "updated_at": _now(),
+                }
+            },
+        )
+        return bool(result.modified_count)
+
+    async def list_recoverable_reservations(
+        self,
+        guild_id: int,
+        now: datetime | None = None,
+        *,
+        limit: int = 100,
+    ) -> list[dict]:
+        """Return expired or unbound reservations, oldest first."""
+
+        now = _safe_datetime(now)
+        return await self.listings.find(
+            {
+                "guild_id": _require_id(guild_id, "guild_id"),
+                "status": "reserved",
+                "$or": [
+                    {"active_ticket_channel_id": None},
+                    {"active_ticket_channel_id": {"$exists": False}},
+                    {"current_reservation_expires_at": {"$lte": now}},
+                    {"current_reservation_expires_at": {"$exists": False}},
+                ],
+            }
+        ).sort("updated_at", 1).limit(max(1, min(1_000, int(limit)))).to_list(
+            length=max(1, min(1_000, int(limit)))
+        )
+
+    async def ensure_reservation_deadline(
+        self,
+        listing_id: str,
+        buyer_id: int,
+        *,
+        now: datetime | None = None,
+    ) -> dict | None:
+        """Backfill a deadline for reservations created before timeouts existed."""
+
+        now = _safe_datetime(now)
+        listing = await self.get_listing(listing_id)
+        if listing is None:
+            return None
+        config = await self.get_config(int(listing["guild_id"]))
+        deadline = now + timedelta(minutes=int(config["reservation_timeout_minutes"]))
+        updated = await self.listings.find_one_and_update(
+            {
+                "_id": _clean_text(listing_id, "listing_id", maximum=100, required=True),
+                "status": "reserved",
+                "current_buyer_id": _require_id(buyer_id, "buyer_id"),
+                "$or": [
+                    {"current_reservation_expires_at": None},
+                    {"current_reservation_expires_at": {"$exists": False}},
+                ],
+            },
+            {
+                "$set": {
+                    "current_reservation_expires_at": deadline,
+                    "updated_at": now,
+                }
+            },
+            return_document=ReturnDocument.AFTER,
+        )
+        return updated or await self.get_listing(listing_id)
 
     async def list_active_ticket_listings(self, *, limit: int = 500) -> list[dict]:
         return await self.listings.find(
@@ -240,6 +341,7 @@ class BrokerageReservationMixin:
                         "active_ticket_channel_id": None,
                         "active_ticket_message_id": None,
                         "active_ticket_buyer_id": None,
+                        "current_reservation_expires_at": None,
                         "updated_at": now,
                     }
                 }
@@ -278,6 +380,13 @@ class BrokerageReservationMixin:
         actor_id = _require_id(actor_id, "actor_id")
         reason = _clean_text(reason, "reason", maximum=1_000)
         now = _now()
+        current = await self.get_listing(listing_id)
+        if current is None:
+            return None
+        config = await self.get_config(int(current["guild_id"]))
+        next_reservation_expires_at = now + timedelta(
+            minutes=int(config["reservation_timeout_minutes"])
+        )
         listing = await self.listings.find_one_and_update(
             {
                 "_id": listing_id,
@@ -372,6 +481,13 @@ class BrokerageReservationMixin:
                         },
                         "current_buyer_id": "$_next_buyer_id",
                         "current_reservation_number": "$_next_reservation_number",
+                        "current_reservation_expires_at": {
+                            "$cond": [
+                                {"$ne": ["$_next_buyer_id", None]},
+                                next_reservation_expires_at,
+                                None,
+                            ]
+                        },
                         "status": {
                             "$cond": [{"$ne": ["$_next_buyer_id", None]}, "reserved", "open"]
                         },

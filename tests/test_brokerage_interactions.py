@@ -316,6 +316,98 @@ class BrokerageComponentsV2SendTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("content", kwargs)
         close_uploaded_files(kwargs)
 
+    async def test_failed_ticket_record_rolls_back_listing_binding(self) -> None:
+        seller = Mock(id=10, mention="<@10>", display_name="seller")
+        buyer = Mock(id=20, mention="<@20>", display_name="buyer")
+        message = SimpleNamespace(id=66)
+        channel = SimpleNamespace(
+            id=55,
+            send=AsyncMock(return_value=message),
+            delete=AsyncMock(),
+        )
+        guild = SimpleNamespace(
+            id=77,
+            default_role=Mock(),
+            get_member=lambda user_id: seller if user_id == 10 else buyer,
+            get_channel=lambda channel_id: None,
+            get_role=lambda role_id: None,
+            create_text_channel=AsyncMock(return_value=channel),
+        )
+        brokerage = SimpleNamespace(
+            bind_active_ticket=AsyncMock(return_value={"_id": "listing-1"}),
+            release_active_ticket_binding=AsyncMock(return_value=True),
+        )
+        tickets = SimpleNamespace(
+            create=AsyncMock(side_effect=RuntimeError("ticket write failed")),
+            close=AsyncMock(),
+        )
+        settings = SimpleNamespace(
+            get=AsyncMock(return_value={"categories": {}, "roles": {}})
+        )
+        cog = object.__new__(BrokerageCog)
+        cog.bot = SimpleNamespace(
+            user=SimpleNamespace(id=999),
+            repos=SimpleNamespace(
+                settings=settings,
+                brokerage=brokerage,
+                tickets=tickets,
+            ),
+        )
+
+        with self.assertRaisesRegex(RuntimeError, "ticket write failed"):
+            await cog.open_trade_ticket(
+                guild,
+                {
+                    "_id": "listing-1",
+                    "guild_id": 77,
+                    "seller_id": 10,
+                    "title": "상품",
+                    "current_reservation_number": 1,
+                },
+                20,
+            )
+
+        brokerage.release_active_ticket_binding.assert_awaited_once_with(
+            "listing-1", 20, 55
+        )
+        tickets.close.assert_awaited_once()
+        channel.delete.assert_awaited_once()
+        close_uploaded_files(channel.send.await_args.kwargs)
+
+    async def test_unbound_listing_post_is_removed(self) -> None:
+        listing = {
+            "_id": "listing-unbound",
+            "guild_id": 77,
+            "seller_id": 123,
+            "title": "상품",
+            "description": "설명",
+            "price": 1_000,
+            "status": "open",
+            "like_count": 0,
+        }
+        message = SimpleNamespace(id=66, delete=AsyncMock())
+        channel = SimpleNamespace(id=55, send=AsyncMock(return_value=message))
+        store = SimpleNamespace(
+            get_config=AsyncMock(return_value={}),
+            ensure_profile=AsyncMock(return_value={"trust_score": 0}),
+            bind_listing_message=AsyncMock(return_value=None),
+        )
+        settings = SimpleNamespace(
+            get=AsyncMock(return_value={"channels": {"brokerage": 55}})
+        )
+        cog = object.__new__(BrokerageCog)
+        cog.bot = SimpleNamespace(
+            repos=SimpleNamespace(brokerage=store, settings=settings)
+        )
+        cog.notification_members = AsyncMock(return_value=([], []))
+        guild = SimpleNamespace(id=77, get_channel=lambda channel_id: channel)
+
+        with self.assertRaisesRegex(RuntimeError, "closed"):
+            await cog.post_listing(guild, listing)
+
+        message.delete.assert_awaited_once()
+        close_uploaded_files(channel.send.await_args.kwargs)
+
 class BrokerageVerificationFlowTests(unittest.IsolatedAsyncioTestCase):
     def interaction(self) -> SimpleNamespace:
         return SimpleNamespace(

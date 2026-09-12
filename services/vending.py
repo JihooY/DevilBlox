@@ -5,6 +5,7 @@ from typing import Literal
 from uuid import uuid4
 
 from database.vending import normalize_product_id, product_type_of
+from services.vending_topup import apply_plan, charge_tokens
 
 
 @dataclass(slots=True)
@@ -153,6 +154,7 @@ class VendingCommerceService:
             raise RuntimeError("purchase entitlement has an unknown state")
 
         operation_id = str(reservation["operation_id"])
+        product = reservation.get("product_snapshot", product)
         original_price = int(reservation.get("original_price", original_price))
         price = original_price
         applied_code: str | None = None
@@ -185,6 +187,11 @@ class VendingCommerceService:
                 price = int(reservation.get("quoted_price", original_price))
                 applied_code = str(promotion_code)
                 discount_kind = "promotion"
+
+        if reservation.get("cash_debited"):
+            price = int(reservation["price"])
+            applied_code = reservation.get("applied_code")
+            discount_kind = reservation.get("discount_kind")
 
         await self.repos.vending.update_purchase_progress(
             operation_id,
@@ -229,6 +236,19 @@ class VendingCommerceService:
             after_cash=spent["after_cash"],
             cash_debited=True,
         )
+        if product.get("topup_enabled") and not reservation.get("topup_result"):
+            if product.get("topup_kind", "tokens") == "plan":
+                topup_result = await apply_plan(
+                    user_id, str(product["topup_plan"]),
+                    int(product["topup_months"]), operation_id,
+                )
+            else:
+                topup_result = await charge_tokens(
+                    user_id, int(product["topup_tokens"]), operation_id,
+                )
+            await self.repos.vending.update_purchase_progress(
+                operation_id, topup_result=topup_result,
+            )
         log = await self.repos.vending.upsert_purchase_log(
             operation_id=operation_id,
             guild_id=guild_id,

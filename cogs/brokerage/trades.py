@@ -121,6 +121,7 @@ class BrokerageTradeMixin:
             buyer_id,
             participant_mentions=f"{seller.mention} {buyer.mention}",
         )
+        bound = None
         try:
             message = await channel.send(
                 **_layout_send_kwargs(
@@ -148,6 +149,30 @@ class BrokerageTradeMixin:
                 reservation_number=listing.get("current_reservation_number"),
             )
         except Exception:
+            if bound is not None:
+                try:
+                    await self.repos.brokerage.release_active_ticket_binding(
+                        str(listing["_id"]), buyer_id, channel.id
+                    )
+                except Exception:
+                    log.exception(
+                        "Failed to roll back brokerage ticket binding: listing_id=%s channel_id=%s",
+                        listing.get("_id"),
+                        channel.id,
+                    )
+            if bound is not None:
+                try:
+                    await self.repos.tickets.close(
+                        guild.id,
+                        channel.id,
+                        close_reason="brokerage_ticket_setup_failed",
+                        closed_by=self.bot.user.id,
+                    )
+                except Exception:
+                    log.exception(
+                        "Failed to close partially created brokerage ticket record: channel_id=%s",
+                        channel.id,
+                    )
             try:
                 await channel.delete(reason="Brokerage ticket creation did not complete")
             except discord.HTTPException:

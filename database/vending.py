@@ -139,6 +139,10 @@ class ProductStore:
         thread_id: int | None = None,
         page_url: str = "",
         product_type: str = "standing",
+        topup_enabled: bool = False,
+        topup_tokens: int = 0,
+        topup_plan: str = "",
+        topup_months: int = 0,
         created_by: int | None = None,
     ):
         now = _now()
@@ -147,6 +151,15 @@ class ProductStore:
             raise ValueError("product price must be zero or greater")
         if product_type not in {"standing", "stock"}:
             raise ValueError("product_type must be 'standing' or 'stock'")
+        topup_kind = "plan" if topup_plan else "tokens"
+        if topup_enabled and product_type != "standing":
+            raise ValueError("API delivery requires a standing product")
+        if topup_enabled and topup_kind == "tokens" and topup_tokens <= 0:
+            raise ValueError("API token delivery requires positive tokens")
+        if topup_enabled and topup_kind == "plan" and (
+            topup_plan not in {"plus", "pro"} or topup_months not in {1, 2, 3, 6}
+        ):
+            raise ValueError("API plan delivery has an invalid plan or duration")
         product_id = product_id.strip()
         product_id_lower = normalize_product_id(product_id)
         category_id = category_id.strip()
@@ -165,6 +178,11 @@ class ProductStore:
             "thread_id": thread_id,
             "page_url": page_url.strip(),
             "product_type": product_type,
+            "topup_enabled": bool(topup_enabled),
+            "topup_tokens": int(topup_tokens),
+            "topup_kind": topup_kind if topup_enabled else "",
+            "topup_plan": topup_plan if topup_enabled else "",
+            "topup_months": int(topup_months) if topup_enabled else 0,
             "active": True,
             "updated_at": now,
         }
@@ -561,6 +579,11 @@ class VendingLogStore:
             "before_cash": int(before_cash),
             "after_cash": int(after_cash),
             "seller_id": product.get("seller_id"),
+            "topup_enabled": bool(product.get("topup_enabled")),
+            "topup_tokens": int(product.get("topup_tokens", 0)),
+            "topup_kind": product.get("topup_kind", "tokens") if product.get("topup_enabled") else "",
+            "topup_plan": product.get("topup_plan", ""),
+            "topup_months": int(product.get("topup_months", 0)),
             "purchased_at": now,
         }
         if discount_code:
@@ -650,9 +673,24 @@ class VendingLogStore:
             "quoted_price": quoted_price,
             "coupon_code": coupon_code,
             "promotion_code": promotion_code,
+            "product_snapshot": dict(product),
+            "topup_enabled": bool(product.get("topup_enabled")),
             "reserved_at": now,
             "updated_at": now,
         }
+        if product.get("topup_enabled"):
+            # Only completed orders can be replaced; concurrent retries share
+            # the pending order and therefore the same remote reference.
+            renewed = await self.user_products.find_one_and_update(
+                {"guild_id": guild_id, "user_id": user_id,
+                 "product_id_lower": product["product_id_lower"], "status": "purchased"},
+                {"$set": reservation, "$unset": {
+                    "topup_result": "", "cash_debited": "", "before_cash": "",
+                    "after_cash": "", "price": "", "applied_code": "", "discount_kind": ""}},
+                return_document=ReturnDocument.AFTER,
+            )
+            if renewed is not None:
+                return renewed
         try:
             await self.user_products.insert_one(reservation)
         except DuplicateKeyError:
@@ -711,7 +749,12 @@ class VendingLogStore:
 
     async def list_owned_products(self, guild_id: int, user_id: int, limit: int | None = None):
         return (
-            await self.user_products.find({"guild_id": guild_id, "user_id": user_id, "status": "purchased"})
+            await self.user_products.find({
+                "guild_id": guild_id,
+                "user_id": user_id,
+                "status": "purchased",
+                "topup_enabled": {"$ne": True},
+            })
             .sort("purchased_at", -1)
             .to_list(length=limit)
         )

@@ -104,7 +104,9 @@ class BrokerageWorkerMixin:
         # and ticket binding. Conditional storage updates prevent duplicate tickets.
         for guild in self.bot.guilds:
             try:
-                listings = await self.repos.brokerage.list_open_listings(guild.id, limit=100)
+                listings = await self.repos.brokerage.list_recoverable_reservations(
+                    guild.id, _now(), limit=100
+                )
             except Exception:
                 log.exception("Failed to inspect brokerage reservation recovery: %s", guild.id)
                 continue
@@ -114,8 +116,56 @@ class BrokerageWorkerMixin:
                 if (
                     listing.get("status") != "reserved"
                     or not buyer_id
-                    or listing.get("active_ticket_channel_id")
                 ):
+                    continue
+                expires_at = listing.get("current_reservation_expires_at")
+                if expires_at is None:
+                    try:
+                        listing = await self.repos.brokerage.ensure_reservation_deadline(
+                            str(listing["_id"]), _int(buyer_id), now=_now()
+                        ) or listing
+                    except Exception:
+                        log.exception(
+                            "Failed to backfill brokerage reservation deadline: listing_id=%s",
+                            listing.get("_id"),
+                        )
+                    expires_at = listing.get("current_reservation_expires_at")
+                if expires_at is not None and (
+                    expires_at.tzinfo is None or expires_at.utcoffset() is None
+                ):
+                    expires_at = expires_at.replace(tzinfo=timezone.utc)
+                if expires_at is not None and expires_at <= _now():
+                    old_channel_id = listing.get("active_ticket_channel_id")
+                    try:
+                        result = await self.repos.brokerage.cancel_reservation_and_promote(
+                            str(listing["_id"]),
+                            _int(buyer_id),
+                            self.bot.user.id,
+                            reason="reservation_timeout",
+                        )
+                        await self.archive_trade_ticket(
+                            guild,
+                            _int(old_channel_id),
+                            buyer_id=_int(buyer_id),
+                            seller_id=_int(listing.get("seller_id")),
+                            reason="Brokerage reservation timed out",
+                        )
+                        promoted = (result or {}).get("listing") or {}
+                        next_buyer_id = (result or {}).get("next_buyer_id")
+                        if next_buyer_id:
+                            await self.open_trade_ticket(
+                                guild, promoted, _int(next_buyer_id)
+                            )
+                        if promoted:
+                            await self.refresh_listing_message(promoted)
+                    except Exception:
+                        log.exception(
+                            "Failed to expire brokerage reservation: listing_id=%s buyer_id=%s",
+                            listing.get("_id"),
+                            buyer_id,
+                        )
+                    continue
+                if listing.get("active_ticket_channel_id"):
                     continue
                 if guild.get_member(_int(buyer_id)) is None:
                     try:
@@ -163,7 +213,11 @@ class BrokerageWorkerMixin:
             except Exception:
                 log.exception("Failed to settle brokerage listing: %s", listing.get("_id"))
                 continue
-            if not result or result.get("already_settled"):
+            if (
+                not result
+                or result.get("already_settled")
+                or result.get("blocked_by_problem")
+            ):
                 continue
             settled = result.get("listing") or listing
             guild = self.bot.get_guild(_int(settled.get("guild_id")))

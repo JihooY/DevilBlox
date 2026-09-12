@@ -137,6 +137,7 @@ class BrokerageListingMixin:
                 ephemeral=True,
             )
             return
+        listing = None
         try:
             listing = await self.repos.brokerage.create_listing(
                 interaction.guild.id,
@@ -153,8 +154,20 @@ class BrokerageListingMixin:
                 embed=error_embed("거래 등록 오류", str(exc)), ephemeral=True
             )
             return
-        except (discord.HTTPException, RuntimeError):
+        except Exception:
             log.exception("Failed to publish brokerage listing")
+            if listing is not None:
+                try:
+                    await self.repos.brokerage.delete_listing(
+                        str(listing["_id"]),
+                        deleted_by=interaction.user.id,
+                        reason="initial_publication_failed",
+                    )
+                except Exception:
+                    log.exception(
+                        "Failed to roll back unpublished brokerage listing: %s",
+                        listing.get("_id"),
+                    )
             await interaction.followup.send(
                 embed=error_embed("거래 등록 실패", "거래 컨테이너를 게시하지 못했습니다."),
                 ephemeral=True,
@@ -254,22 +267,41 @@ class BrokerageListingMixin:
         message = await channel.send(
             **_layout_send_kwargs(view, mentions=mentions),
         )
-        next_bump_at = _now() + timedelta(minutes=effective_minutes)
-        bound = await self.repos.brokerage.bind_listing_message(
-            str(listing["_id"]),
-            channel.id,
-            message.id,
-            next_bump_at,
-            bump_interval_minutes=effective_minutes,
-        )
-        if bound is None:
-            raise RuntimeError("listing was closed while it was being posted")
-        if mark_once:
-            marked = await self.repos.brokerage.mark_notified_users(
-                str(listing["_id"]), mark_once
+        try:
+            next_bump_at = _now() + timedelta(minutes=effective_minutes)
+            bound = await self.repos.brokerage.bind_listing_message(
+                str(listing["_id"]),
+                channel.id,
+                message.id,
+                next_bump_at,
+                bump_interval_minutes=effective_minutes,
             )
-            if marked and marked.get("listing"):
-                bound = marked["listing"]
+            if bound is None:
+                raise RuntimeError("listing was closed while it was being posted")
+        except Exception:
+            try:
+                await message.delete()
+            except Exception:
+                log.warning(
+                    "Failed to remove an unbound brokerage post: listing_id=%s message_id=%s",
+                    listing.get("_id"),
+                    getattr(message, "id", None),
+                )
+            raise
+        if mark_once:
+            try:
+                marked = await self.repos.brokerage.mark_notified_users(
+                    str(listing["_id"]), mark_once
+                )
+                if marked and marked.get("listing"):
+                    bound = marked["listing"]
+            except Exception:
+                # The post is already visible and safely bound.  Notification
+                # bookkeeping failure must not create another public copy.
+                log.exception(
+                    "Failed to persist brokerage notification recipients: listing_id=%s",
+                    listing.get("_id"),
+                )
         if replace_previous:
             old_channel_id = listing.get("channel_id")
             old_message_id = listing.get("message_id")

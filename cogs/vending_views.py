@@ -602,6 +602,8 @@ class ProductDetailView(discord.ui.LayoutView):
         super().__init__(timeout=180)
         self.cog = cog
         self.product_id = product["product_id"]
+        if product.get("topup_enabled"):
+            owned = False
         is_stock = product.get("product_type") == "stock"
         out_of_stock = is_stock and not owned and (stock_count or 0) <= 0
         lines = [
@@ -614,6 +616,12 @@ class ProductDetailView(discord.ui.LayoutView):
         ]
         if is_stock:
             lines.append(f"재고: `{stock_count or 0}개`" + (" · 품절" if out_of_stock else ""))
+        if product.get("topup_enabled"):
+            if product.get("topup_kind", "tokens") == "plan":
+                delivery = f"{str(product.get('topup_plan', '')).upper()} 플랜 {int(product.get('topup_months', 0))}개월"
+            else:
+                delivery = f"{int(product.get('topup_tokens', 0)):,} 토큰"
+            lines.append(f"구매 시 지급: `{delivery}` (반복 구매 가능)")
         original_price = int(product.get("price", 0))
         if applied and discounted_price is not None and discounted_price < original_price:
             discount_amount = original_price - discounted_price

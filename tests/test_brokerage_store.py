@@ -106,5 +106,83 @@ class BrokerageListingScheduleStoreTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(values["next_bump_at"], now)
 
 
+class BrokerageScoreConsistencyTests(unittest.IsolatedAsyncioTestCase):
+    async def test_adjustment_returns_and_ledgers_the_actual_clamped_delta(self) -> None:
+        operation_id = "problem:boundary:deduction"
+        updated_profile = {
+            "trust_score": -100,
+            "score_operation_ids": [operation_id],
+            "score_operation_results": [
+                {
+                    "operation_id": operation_id,
+                    "score_before": -99,
+                    "score_after": -100,
+                    "applied_delta": -1,
+                }
+            ],
+        }
+        store = object.__new__(BrokerageStore)
+        store.ensure_profile = AsyncMock(
+            return_value={"trust_score": -99, "problem_count": 0, "penalty_level": 0}
+        )
+        store.profiles = SimpleNamespace(
+            find_one_and_update=AsyncMock(return_value=updated_profile)
+        )
+        store.score_ledger = SimpleNamespace(
+            insert_one=AsyncMock(),
+            update_one=AsyncMock(),
+        )
+        store.refresh_listing_intervals = AsyncMock(return_value=0)
+
+        result = await store.adjust_profile(
+            77,
+            123,
+            -10,
+            operation_id=operation_id,
+            reason="boundary_test",
+        )
+
+        self.assertEqual(result["effective_delta"], -10)
+        self.assertEqual(result["delta"], -1)
+        self.assertEqual(result["ledger"]["applied_delta"], -1)
+        ledger_update = store.score_ledger.update_one.await_args.args[1]["$set"]
+        self.assertEqual(ledger_update["score_before"], -99)
+        self.assertEqual(ledger_update["score_after"], -100)
+        self.assertEqual(ledger_update["applied_delta"], -1)
+
+    async def test_settlement_reversal_uses_actual_not_requested_award(self) -> None:
+        store = object.__new__(BrokerageStore)
+        store.score_ledger = SimpleNamespace(
+            find_one=AsyncMock(
+                side_effect=[
+                    {"delta": 10, "applied_delta": 1},
+                    {"delta": 10, "applied_delta": 4},
+                ]
+            )
+        )
+        store.adjust_profile = AsyncMock(return_value={"new_operation": True})
+        listing = {
+            "_id": "listing-boundary",
+            "guild_id": 77,
+            "seller_id": 10,
+            "sold_to": 20,
+            "settlement": {"operation_id": "listing:listing-boundary:settlement"},
+        }
+
+        await store.reverse_settlement_awards(
+            listing,
+            problem_id="problem-1",
+            actor_id=999,
+        )
+
+        deltas = [call.args[2] for call in store.adjust_profile.await_args_list]
+        self.assertEqual(deltas, [-1, -4])
+
+
+class BrokerageConfigurationTests(unittest.TestCase):
+    def test_reservations_have_a_bounded_default_timeout(self) -> None:
+        self.assertEqual(DEFAULT_CONFIG["reservation_timeout_minutes"], 30)
+
+
 if __name__ == "__main__":
     unittest.main()
