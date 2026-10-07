@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import secrets
 import time
 
@@ -32,6 +33,42 @@ VERIFY_TIMEOUT = 120
 MAX_ATTEMPTS = 3
 
 
+LANGUAGES = {"ko": "한국어", "en": "English", "ja": "日本語", "zh": "中文"}
+TEXT = {
+    "ko": ["화면의 보안 코드를 아래 버튼으로 입력하세요.", "보안 코드", "입력 상태", "상태", "남은 시간", "초", "남은 시도", "본인 인증 세션만 조작할 수 있습니다.", "인증 시도 횟수를 초과했습니다. 새 인증 세션을 시작해주세요.", "입력한 코드가 일치하지 않습니다. 다시 입력해주세요.", "`/역할설정`으로 인증 역할을 먼저 설정해주세요.", "봇 역할이 인증 역할보다 낮거나 역할 관리 권한이 없습니다.", "인증이 완료되어 {role} 역할이 지급되었습니다.", "인증 시간이 만료되었습니다. 다시 시작해주세요.", "서버 안에서만 사용할 수 있습니다.", "이미 인증이 완료되어 있습니다.", "삭제", "확인", "입력 대기", "잠김", "잘못된 코드", "설정 오류", "권한 오류", "인증 완료", "시간 만료"],
+    "en": ["Enter the security code using the buttons below.", "Security code", "Your input", "Status", "Time left", "s", "Attempts left", "You can only use your own verification session.", "Too many attempts. Please start a new verification session.", "Incorrect code. Please try again.", "Please configure the verification role with `/역할설정` first.", "The bot needs Manage Roles permission and a role above the verification role.", "Verification complete. You received the {role} role.", "Verification timed out. Please start again.", "This is only available in a server.", "You are already verified.", "DELETE", "CONFIRM", "WAITING INPUT", "LOCKED", "INVALID CODE", "CONFIGURATION ERROR", "PERMISSION ERROR", "VERIFIED", "EXPIRED"],
+    "ja": ["下のボタンで画面の認証コードを入力してください。", "認証コード", "入力内容", "状態", "残り時間", "秒", "残り試行回数", "自分の認証セッションのみ操作できます。", "試行回数の上限に達しました。認証をやり直してください。", "コードが一致しません。もう一度入力してください。", "先に `/역할설정` で認証ロールを設定してください。", "ボットにロール管理権限がないか、認証ロールより順位が低くなっています。", "認証が完了し、{role} ロールが付与されました。", "認証の有効期限が切れました。やり直してください。", "サーバー内でのみ使用できます。", "すでに認証済みです。", "削除", "確認", "入力待ち", "ロック済み", "コード不一致", "設定エラー", "権限エラー", "認証完了", "期限切れ"],
+    "zh": ["请使用下方按钮输入屏幕上的验证码。", "验证码", "输入内容", "状态", "剩余时间", "秒", "剩余尝试次数", "您只能操作自己的验证会话。", "尝试次数已用尽。请重新开始验证。", "验证码不匹配，请重新输入。", "请先使用 `/역할설정` 配置验证身份组。", "机器人缺少管理身份组权限，或其身份组低于验证身份组。", "验证完成，已获得 {role} 身份组。", "验证已超时，请重新开始。", "只能在服务器内使用。", "您已完成验证。", "删除", "确认", "等待输入", "已锁定", "验证码错误", "配置错误", "权限错误", "验证完成", "已超时"],
+}
+STATUS_KEYS = ["WAITING INPUT", "LOCKED", "INVALID CODE", "CONFIGURATION ERROR", "PERMISSION ERROR", "VERIFIED", "EXPIRED"]
+
+
+EASTER_LANGUAGES = {
+    "clay": "점토판에 구운 뒤 유니코드 UTF-32로 복원한 수메르어",
+    "dna": "DNA 염기서열 ACGT 4진법으로 인코딩한 산스크리트어",
+    "dolphin": "돌고래 클릭음을 유니코드로 직렬화한 뒤 Base64로 인코딩한 고대 이집트어",
+}
+
+
+def easter_egg_message(language: str) -> str:
+    # Fictional language ciphers, not translations into historical languages.
+    raw = "깨비 바보".encode("utf-32-be")
+    if language == "clay":
+        alphabet = "𒀀𒀁𒀂𒀃𒀄𒀅𒀆𒀇𒀈𒀉𒀊𒀋𒀌𒀍𒀎𒀏"
+        payload = " ".join("".join(alphabet[int(n, 16)] for n in raw[i:i + 4].hex())
+                           for i in range(0, len(raw), 4))
+    elif language == "dna":
+        payload = " ".join("".join("ACGT"[(byte >> shift) & 3]
+                                  for shift in (6, 4, 2, 0)) for byte in raw)
+    elif language == "dolphin":
+        clay = easter_egg_message("clay")
+        dna = easter_egg_message("dna")
+        payload = base64.b64encode((clay + "\n" + dna).encode("utf-32-be")).decode("ascii")
+    else:
+        raise ValueError("Unsupported Easter egg language")
+    return payload
+
+
 class NumberButton(discord.ui.Button):
     def __init__(self, pad: "VerifyPad", number: str, *, disabled: bool = False):
         super().__init__(
@@ -49,7 +86,7 @@ class NumberButton(discord.ui.Button):
 class ClearButton(discord.ui.Button):
     def __init__(self, pad: "VerifyPad", *, disabled: bool = False):
         super().__init__(
-            label="DELETE",
+            label=pad.text[16],
             style=discord.ButtonStyle.danger,
             disabled=disabled,
         )
@@ -62,7 +99,7 @@ class ClearButton(discord.ui.Button):
 class ConfirmButton(discord.ui.Button):
     def __init__(self, pad: "VerifyPad", *, disabled: bool = False):
         super().__init__(
-            label="CONFIRM",
+            label=pad.text[17],
             style=discord.ButtonStyle.success,
             disabled=disabled,
         )
@@ -111,8 +148,10 @@ def _verify_send_kwargs(
 
 
 class VerifyPad(discord.ui.LayoutView):
-    def __init__(self, cog: "VerificationCog", user_id: int, code: str, gif_name: str | None):
+    def __init__(self, cog: "VerificationCog", user_id: int, code: str, gif_name: str | None, language: str = "ko"):
         super().__init__(timeout=VERIFY_TIMEOUT)
+        self.language = language if language in LANGUAGES else "ko"
+        self.text = TEXT[self.language]
         self.cog = cog
         self.user_id = user_id
         self.code = code
@@ -144,15 +183,15 @@ class VerifyPad(discord.ui.LayoutView):
     def _content(self) -> str:
         filled = "■ " * len(self.input_code)
         empty = "□ " * (4 - len(self.input_code))
+        t = self.text
+        status = t[18 + STATUS_KEYS.index(self.display_status)]
         lines = [
-            "## DEVILBLOX VERIFICATION",
-            "화면의 보안 코드를 아래 버튼으로 입력하세요.",
-            "",
-            f"### 보안 코드\n```fix\n{self.code}\n```",
-            f"### 입력 상태\n```fix\n{filled}{empty}\n```",
-            f"**상태**  `{self.display_status}`",
-            f"**남은 시간**  `{self._remaining()}초` · "
-            f"**남은 시도**  `{max(0, MAX_ATTEMPTS - self.attempts)}`",
+            "## DEVILBLOX VERIFICATION", t[0], "",
+            f"### {t[1]}\n```fix\n{self.code}\n```",
+            f"### {t[2]}\n```fix\n{filled}{empty}\n```",
+            f"**{t[3]}**  `{status}`",
+            f"**{t[4]}**  `{self._remaining()}{t[5]}` · "
+            f"**{t[6]}**  `{max(0, MAX_ATTEMPTS - self.attempts)}`",
         ]
         if self.note:
             lines.extend(("", self.note))
@@ -203,7 +242,7 @@ class VerifyPad(discord.ui.LayoutView):
     async def interaction_allowed(self, interaction: discord.Interaction) -> bool:
         if interaction.user.id == self.user_id:
             return True
-        await interaction.response.send_message("본인 인증 세션만 조작할 수 있습니다.", ephemeral=True)
+        await interaction.response.send_message(self.text[7], ephemeral=True)
         return False
 
     async def press_number(self, interaction: discord.Interaction, number: str):
@@ -233,14 +272,14 @@ class VerifyPad(discord.ui.LayoutView):
                 self._render(
                     "LOCKED",
                     0xE5484D,
-                    "인증 시도 횟수를 초과했습니다. 새 인증 세션을 시작해주세요.",
+                    self.text[8],
                 )
                 await interaction.response.edit_message(**self._edit_kwargs())
                 return
             self._render(
                 "INVALID CODE",
                 0xE5484D,
-                "입력한 코드가 일치하지 않습니다. 다시 입력해주세요.",
+                self.text[9],
             )
             await interaction.response.edit_message(**self._edit_kwargs())
             return
@@ -253,7 +292,7 @@ class VerifyPad(discord.ui.LayoutView):
             self._render(
                 "CONFIGURATION ERROR",
                 0xE5484D,
-                "`/역할설정`으로 인증 역할을 먼저 설정해주세요.",
+                self.text[10],
             )
             await interaction.response.edit_message(**self._edit_kwargs())
             return
@@ -265,7 +304,7 @@ class VerifyPad(discord.ui.LayoutView):
             self._render(
                 "PERMISSION ERROR",
                 0xE5484D,
-                "봇 역할이 인증 역할보다 낮거나 역할 관리 권한이 없습니다.",
+                self.text[11],
             )
             await interaction.response.edit_message(**self._edit_kwargs())
             return
@@ -276,7 +315,7 @@ class VerifyPad(discord.ui.LayoutView):
         self._render(
             "VERIFIED",
             0x2ECC71,
-            f"인증이 완료되어 {role.mention} 역할이 지급되었습니다.",
+            self.text[12].format(role=role.mention),
         )
         await interaction.response.edit_message(**self._edit_kwargs())
 
@@ -284,7 +323,7 @@ class VerifyPad(discord.ui.LayoutView):
         self.disable_controls()
         if self.message is None:
             return
-        self._render("EXPIRED", 0xE5484D, "인증 시간이 만료되었습니다. 다시 시작해주세요.")
+        self._render("EXPIRED", 0xE5484D, self.text[13])
         try:
             await self.message.edit(**self._edit_kwargs())
         except discord.HTTPException:
@@ -310,6 +349,14 @@ class VerifyStartView(discord.ui.LayoutView):
         )
         start.callback = self.start
         container.add_item(discord.ui.ActionRow(start))
+        container.add_item(discord.ui.Separator(spacing=discord.SeparatorSpacing.small))
+        container.add_item(discord.ui.ActionRow(*(
+            discord.ui.Button(
+                label=label, style=discord.ButtonStyle.secondary,
+                custom_id=f"devilblox:verify:supported:{language}", disabled=True,
+            )
+            for language, label in LANGUAGES.items()
+        )))
         self.add_item(container)
 
     async def start(self, interaction: discord.Interaction):
@@ -317,23 +364,86 @@ class VerifyStartView(discord.ui.LayoutView):
             await interaction.response.send_message("서버 안에서만 사용할 수 있습니다.", ephemeral=True)
             return
 
-        settings = await self.cog.settings.get(interaction.guild.id)
-        verified_role_id = settings["roles"].get("verified")
-        if has_role(interaction.user, verified_role_id):
-            await interaction.response.send_message("이미 인증이 완료되어 있습니다.", ephemeral=True)
-            return
+        await interaction.response.send_message(
+            view=VerifyLanguageView(self.cog, interaction.user.id), ephemeral=True,
+        )
 
+
+class VerifyLanguageView(discord.ui.LayoutView):
+    def __init__(self, cog: "VerificationCog", user_id: int):
+        super().__init__(timeout=VERIFY_TIMEOUT)
+        self.cog = cog
+        self.user_id = user_id
+        self.started = False
+        container = discord.ui.Container(accent_color=COLOR_DARK)
+        container.add_item(discord.ui.TextDisplay(
+            "## LANGUAGE\n한국어 / English / 日本語 / 中文"
+        ))
+        row = discord.ui.ActionRow()
+        for language, label in LANGUAGES.items():
+            button = discord.ui.Button(label=label, style=discord.ButtonStyle.primary)
+
+            async def select(interaction, language=language):
+                await self.select_language(interaction, language)
+
+            button.callback = select
+            row.add_item(button)
+        container.add_item(row)
+        secret = discord.ui.Select(
+            placeholder="그 밖의 언어… / Other languages…",
+            options=[discord.SelectOption(label=label, value=key)
+                     for key, label in EASTER_LANGUAGES.items()],
+        )
+
+        async def select_secret(interaction):
+            await self.show_easter_egg(interaction, secret.values[0])
+
+        secret.callback = select_secret
+        container.add_item(discord.ui.ActionRow(secret))
+        self.easter_display = discord.ui.TextDisplay("-# 다른 차원의 언어도 감지되었습니다.")
+        container.add_item(self.easter_display)
+        self.add_item(container)
+
+    async def show_easter_egg(self, interaction: discord.Interaction, language: str):
+        if interaction.user.id != self.user_id:
+            await interaction.response.send_message(TEXT["ko"][7], ephemeral=True)
+            return
+        if self.started or self.is_finished():
+            await interaction.response.send_message(TEXT["ko"][13], ephemeral=True)
+            return
+        payload = easter_egg_message(language)
+        self.easter_display.content = (
+            f"### {EASTER_LANGUAGES[language]}\n```\n{payload}\n```\n"
+            "-# 이스터에그용 가상 암호입니다. 인증은 위의 네 언어 중 하나를 선택하세요."
+        )
+        await interaction.response.edit_message(view=self)
+
+    async def select_language(self, interaction: discord.Interaction, language: str):
+        t = TEXT[language]
+        if interaction.user.id != self.user_id:
+            await interaction.response.send_message(t[7], ephemeral=True)
+            return
+        if interaction.guild is None:
+            await interaction.response.send_message(t[14], ephemeral=True)
+            return
+        if self.started or self.is_finished():
+            await interaction.response.send_message(t[13], ephemeral=True)
+            return
+        self.started = True
+        await interaction.response.defer()
+        settings = await self.cog.settings.get(interaction.guild.id)
+        if has_role(interaction.user, settings["roles"].get("verified")):
+            await interaction.edit_original_response(content=t[15], view=None)
+            self.stop()
+            return
         code = "".join(secrets.choice("0123456789") for _ in range(4))
         gif_name = choose_gif(VERIFY_GIFS)
-        view = VerifyPad(self.cog, interaction.user.id, code, gif_name)
-        file = gif_file(gif_name)
-
-        await interaction.response.defer(ephemeral=True)
-        view.message = await interaction.followup.send(
-            **_verify_send_kwargs(view, file),
-            ephemeral=True,
-            wait=True,
+        view = VerifyPad(self.cog, interaction.user.id, code, gif_name, language)
+        files = branded_files(gif_file(gif_name))
+        view.message = await interaction.edit_original_response(
+            content=None, view=view, attachments=files,
         )
+        self.stop()
 
 
 class VerificationCog(commands.Cog):
@@ -448,6 +558,7 @@ class VerificationCog(commands.Cog):
     @app_commands.command(name="인증패널", description="현재 채널에 인증 패널을 생성합니다.")
     @app_commands.default_permissions(administrator=True)
     async def verify_panel(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True, thinking=True)
         status = gif_delivery_status()
         include_media = status.effective_mode != "local" or claim_local_gif_upload_slot()
         file = gif_file_from_folder("verify_panel.gif", "banners") if include_media else None
@@ -462,7 +573,7 @@ class VerificationCog(commands.Cog):
             interaction.channel.id,
             message.id,
         )
-        await interaction.response.send_message(embed=success_embed("인증 패널 생성 완료"), ephemeral=True)
+        await interaction.followup.send(embed=success_embed("인증 패널 생성 완료"), ephemeral=True)
 
 
 async def setup(bot: commands.Bot):

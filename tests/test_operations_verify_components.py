@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 from datetime import datetime, timezone
 from types import SimpleNamespace
 import unittest
@@ -216,6 +217,79 @@ class OperationsComponentsTests(unittest.IsolatedAsyncioTestCase):
 
 
 class VerifyComponentsTests(unittest.IsolatedAsyncioTestCase):
+    async def test_easter_eggs_preserve_phrase_and_allow_verification(self):
+        clay = verify_module.easter_egg_message("clay")
+        raw = bytes.fromhex("".join(
+            format(ord(char) - 0x12000, "x") for char in clay if char != " "
+        ))
+        self.assertEqual(raw.decode("utf-32-be"), "깨비 바보")
+        dna = verify_module.easter_egg_message("dna")
+        self.assertEqual(bytes(int("".join(str("ACGT".index(c)) for c in group), 4)
+                               for group in dna.split()).decode("utf-32-be"), "깨비 바보")
+        dolphin = verify_module.easter_egg_message("dolphin")
+        self.assertEqual(base64.b64decode(dolphin).decode("utf-32-be"), clay + "\n" + dna)
+
+        view = verify_module.VerifyLanguageView(SimpleNamespace(), 2)
+        interaction = SimpleNamespace(
+            user=SimpleNamespace(id=2),
+            response=SimpleNamespace(edit_message=AsyncMock()),
+        )
+        for language in verify_module.EASTER_LANGUAGES:
+            await view.show_easter_egg(interaction, language)
+            self.assertIn(verify_module.easter_egg_message(language), view.easter_display.content)
+            self.assertLess(len(view.easter_display.content), 2000)
+        self.assertFalse(view.started)
+        self.assertFalse(view.is_finished())
+        self.assertEqual(len([item for item in view.walk_children()
+                              if isinstance(item, discord.ui.Button)]), 4)
+
+    async def test_easter_egg_rejects_other_user(self):
+        view = verify_module.VerifyLanguageView(SimpleNamespace(), 2)
+        interaction = SimpleNamespace(
+            user=SimpleNamespace(id=3),
+            response=SimpleNamespace(send_message=AsyncMock(), edit_message=AsyncMock()),
+        )
+        await view.show_easter_egg(interaction, "clay")
+        interaction.response.edit_message.assert_not_awaited()
+        interaction.response.send_message.assert_awaited_once_with(verify_module.TEXT["ko"][7], ephemeral=True)
+
+    async def test_panel_command_defers_before_upload_and_save(self):
+        events = []
+
+        async def defer(**kwargs):
+            events.append("defer")
+
+        async def send(**kwargs):
+            events.append("upload")
+            return SimpleNamespace(id=20)
+
+        async def save(*args):
+            events.append("save")
+
+        async def followup(**kwargs):
+            events.append("followup")
+
+        cog = object.__new__(VerificationCog)
+        cog.bot = SimpleNamespace(repos=SimpleNamespace())
+        cog.build_verify_panel_view = Mock(return_value=SimpleNamespace())
+        interaction = SimpleNamespace(
+            guild=SimpleNamespace(id=1),
+            channel=SimpleNamespace(id=10, send=AsyncMock(side_effect=send)),
+            response=SimpleNamespace(defer=AsyncMock(side_effect=defer)),
+            followup=SimpleNamespace(send=AsyncMock(side_effect=followup)),
+        )
+        with (
+            patch.object(verify_module, "gif_delivery_status", return_value=SimpleNamespace(effective_mode="remote")),
+            patch.object(verify_module, "gif_file_from_folder", return_value=None),
+            patch.object(verify_module, "branded_files", return_value=[]),
+            patch.object(verify_module, "save_panel_location", side_effect=save),
+        ):
+            await VerificationCog.verify_panel.callback(cog, interaction)
+
+        self.assertEqual(events, ["defer", "upload", "save", "followup"])
+        interaction.response.defer.assert_awaited_once_with(ephemeral=True, thinking=True)
+        self.assertTrue(interaction.followup.send.await_args.kwargs["ephemeral"])
+
     def test_start_panel_is_persistent_components_v2(self):
         with patch.object(
             verify_module,
@@ -248,13 +322,70 @@ class VerifyComponentsTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(set(pad.number_order), set("123456789"))
         self.assertEqual(
             {button.label for button in buttons},
-            set("0123456789") | {"DELETE", "CONFIRM"},
+            set("0123456789") | {"삭제", "확인"},
         )
         text = "\n".join(
             item.content for item in children if isinstance(item, discord.ui.TextDisplay)
         )
         self.assertIn("1234", text)
-        self.assertIn("WAITING INPUT", text)
+        self.assertIn("입력 대기", text)
+
+    async def test_start_opens_private_language_choice(self):
+        view = VerifyStartView(SimpleNamespace())
+        interaction = SimpleNamespace(
+            guild=SimpleNamespace(id=1), user=SimpleNamespace(id=2),
+            response=SimpleNamespace(send_message=AsyncMock()),
+        )
+        await view.start(interaction)
+        kwargs = interaction.response.send_message.await_args.kwargs
+        self.assertTrue(kwargs["ephemeral"])
+        self.assertIsInstance(kwargs["view"], verify_module.VerifyLanguageView)
+        self.assertEqual(
+            [item.label for item in kwargs["view"].walk_children()
+             if isinstance(item, discord.ui.Button)],
+            list(verify_module.LANGUAGES.values()),
+        )
+
+    async def test_language_selection_starts_localized_pad(self):
+        for language in verify_module.LANGUAGES:
+            with self.subTest(language=language):
+                cog = SimpleNamespace(settings=SimpleNamespace(
+                    get=AsyncMock(return_value={"roles": {"verified": 30}}),
+                ))
+                view = verify_module.VerifyLanguageView(cog, 2)
+                message = SimpleNamespace(edit=AsyncMock())
+                interaction = SimpleNamespace(
+                    guild=SimpleNamespace(id=1),
+                    user=SimpleNamespace(id=2, roles=[]),
+                    response=SimpleNamespace(defer=AsyncMock()),
+                    edit_original_response=AsyncMock(return_value=message),
+                )
+                with (
+                    patch.object(verify_module, "gif_file", return_value=None),
+                    patch.object(verify_module, "branded_files", return_value=[]),
+                ):
+                    await view.select_language(interaction, language)
+                pad = interaction.edit_original_response.await_args.kwargs["view"]
+                self.assertEqual(pad.language, language)
+                self.assertIs(pad.message, message)
+                self.assertIn(verify_module.TEXT[language][0], pad._content())
+                pad.input_code = "wrong"
+                interaction.response.edit_message = AsyncMock()
+                await pad.confirm(interaction)
+                self.assertIn(verify_module.TEXT[language][9], pad._content())
+                await pad.on_timeout()
+                self.assertIn(verify_module.TEXT[language][13], pad._content())
+
+    async def test_language_selection_rejects_other_user(self):
+        view = verify_module.VerifyLanguageView(SimpleNamespace(), 2)
+        interaction = SimpleNamespace(
+            user=SimpleNamespace(id=3),
+            response=SimpleNamespace(send_message=AsyncMock()),
+        )
+        await view.select_language(interaction, "en")
+        interaction.response.send_message.assert_awaited_once_with(
+            verify_module.TEXT["en"][7], ephemeral=True,
+        )
 
     async def test_key_press_updates_components_without_legacy_embed(self):
         pad = VerifyPad(SimpleNamespace(), user_id=2, code="1234", gif_name=None)
