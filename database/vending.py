@@ -143,6 +143,9 @@ class ProductStore:
         topup_tokens: int = 0,
         topup_plan: str = "",
         topup_months: int = 0,
+        boost_enabled: bool = False,
+        boost_months: int = 0,
+        boost_quantity: int = 0,
         created_by: int | None = None,
     ):
         now = _now()
@@ -151,6 +154,11 @@ class ProductStore:
             raise ValueError("product price must be zero or greater")
         if product_type not in {"standing", "stock"}:
             raise ValueError("product_type must be 'standing' or 'stock'")
+        if boost_enabled:
+            from services.vending_boost import validate_boost
+            validate_boost(boost_months, boost_quantity)
+            if topup_enabled or product_type != "standing":
+                raise ValueError("BOOST requires a standing product without token/plan delivery")
         topup_kind = "plan" if topup_plan else "tokens"
         if topup_enabled and product_type != "standing":
             raise ValueError("API delivery requires a standing product")
@@ -178,6 +186,9 @@ class ProductStore:
             "thread_id": thread_id,
             "page_url": page_url.strip(),
             "product_type": product_type,
+            "boost_enabled": bool(boost_enabled),
+            "boost_months": boost_months if boost_enabled else 0,
+            "boost_quantity": boost_quantity if boost_enabled else 0,
             "topup_enabled": bool(topup_enabled),
             "topup_tokens": int(topup_tokens),
             "topup_kind": topup_kind if topup_enabled else "",
@@ -579,6 +590,9 @@ class VendingLogStore:
             "before_cash": int(before_cash),
             "after_cash": int(after_cash),
             "seller_id": product.get("seller_id"),
+            "boost_enabled": bool(product.get("boost_enabled")),
+            "boost_months": int(product.get("boost_months", 0)),
+            "boost_quantity": int(product.get("boost_quantity", 0)),
             "topup_enabled": bool(product.get("topup_enabled")),
             "topup_tokens": int(product.get("topup_tokens", 0)),
             "topup_kind": product.get("topup_kind", "tokens") if product.get("topup_enabled") else "",
@@ -674,18 +688,21 @@ class VendingLogStore:
             "coupon_code": coupon_code,
             "promotion_code": promotion_code,
             "product_snapshot": dict(product),
+            "boost_enabled": bool(product.get("boost_enabled")),
+            "boost_months": int(product.get("boost_months", 0)),
+            "boost_quantity": int(product.get("boost_quantity", 0)),
             "topup_enabled": bool(product.get("topup_enabled")),
             "reserved_at": now,
             "updated_at": now,
         }
-        if product.get("topup_enabled"):
+        if product.get("topup_enabled") or product.get("boost_enabled"):
             # Only completed orders can be replaced; concurrent retries share
             # the pending order and therefore the same remote reference.
             renewed = await self.user_products.find_one_and_update(
                 {"guild_id": guild_id, "user_id": user_id,
                  "product_id_lower": product["product_id_lower"], "status": "purchased"},
                 {"$set": reservation, "$unset": {
-                    "topup_result": "", "cash_debited": "", "before_cash": "",
+                    "topup_result": "", "boost_result": "", "cash_debited": "", "before_cash": "",
                     "after_cash": "", "price": "", "applied_code": "", "discount_kind": ""}},
                 return_document=ReturnDocument.AFTER,
             )
@@ -754,6 +771,7 @@ class VendingLogStore:
                 "user_id": user_id,
                 "status": "purchased",
                 "topup_enabled": {"$ne": True},
+                "boost_enabled": {"$ne": True},
             })
             .sort("purchased_at", -1)
             .to_list(length=limit)

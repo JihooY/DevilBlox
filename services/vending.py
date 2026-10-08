@@ -5,6 +5,7 @@ from typing import Literal
 from uuid import uuid4
 
 from database.vending import normalize_product_id, product_type_of
+from services.vending_boost import order_boost, validate_boost
 from services.vending_topup import apply_plan, charge_tokens
 
 
@@ -118,6 +119,11 @@ class VendingCommerceService:
         original_price = int(product.get("price", 0))
         if original_price < 0:
             raise ValueError("product price must be zero or greater")
+
+        if product.get("boost_enabled"):
+            validate_boost(product.get("boost_months"), product.get("boost_quantity"))
+            if product_type_of(product) == "stock" or product.get("topup_enabled"):
+                raise ValueError("invalid BOOST delivery configuration")
 
         if product_type_of(product) == "stock":
             return await self._purchase_stock(guild_id, user_id, product, original_price)
@@ -236,6 +242,14 @@ class VendingCommerceService:
             after_cash=spent["after_cash"],
             cash_debited=True,
         )
+        if product.get("boost_enabled") and not reservation.get("boost_result"):
+            boost_result = await order_boost(
+                user_id, int(product["boost_months"]),
+                int(product["boost_quantity"]), operation_id,
+            )
+            await self.repos.vending.update_purchase_progress(
+                operation_id, boost_result=boost_result,
+            )
         if product.get("topup_enabled") and not reservation.get("topup_result"):
             if product.get("topup_kind", "tokens") == "plan":
                 topup_result = await apply_plan(

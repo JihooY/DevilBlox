@@ -602,7 +602,7 @@ class ProductDetailView(discord.ui.LayoutView):
         super().__init__(timeout=180)
         self.cog = cog
         self.product_id = product["product_id"]
-        if product.get("topup_enabled"):
+        if product.get("topup_enabled") or product.get("boost_enabled"):
             owned = False
         is_stock = product.get("product_type") == "stock"
         out_of_stock = is_stock and not owned and (stock_count or 0) <= 0
@@ -622,6 +622,9 @@ class ProductDetailView(discord.ui.LayoutView):
             else:
                 delivery = f"{int(product.get('topup_tokens', 0)):,} 토큰"
             lines.append(f"구매 시 지급: `{delivery}` (반복 구매 가능)")
+        if product.get("boost_enabled"):
+            lines.append(f"부스트 주문: `{product['boost_months']}개월 · {product['boost_quantity']}개` (반복 구매 가능)")
+            lines.append("구매 후 부스트 봇의 DM에 서버 초대링크를 보내주세요.")
         original_price = int(product.get("price", 0))
         if applied and discounted_price is not None and discounted_price < original_price:
             discount_amount = original_price - discounted_price

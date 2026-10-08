@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import io
+import json
 import re
 from collections.abc import Callable
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, quote, urlparse
 
 import discord
 from discord import app_commands
@@ -45,6 +46,7 @@ from database.vending import (
     normalize_product_id,
 )
 from services.vending import VendingCommerceService
+from services.vending_boost import call_boost, validate_boost
 from services.vending_topup import TopupPendingError
 from utils.embeds import (
     BRAND_LOGO_FILENAME,
@@ -269,6 +271,8 @@ class VendingArchiveCog(commands.Cog):
         if product.get("product_type") == "stock":
             count = await self.repos.vending_stock.count(guild_id, product["product_id"])
             embed.add_field(name="재고", value=f"{count}개" + (" (품절)" if count <= 0 else ""), inline=True)
+        if product.get("boost_enabled"):
+            embed.add_field(name="부스트 주문", value=f"{product['boost_months']}개월 · {product['boost_quantity']}개 · DM에서 초대링크 입력", inline=False)
         if product.get("topup_enabled"):
             if product.get("topup_kind", "tokens") == "plan":
                 delivery = f"{product.get('topup_plan', '').upper()} 플랜 {int(product.get('topup_months', 0))}개월"
@@ -872,7 +876,7 @@ class VendingArchiveCog(commands.Cog):
         if result.newly_completed:
             await self.send_purchase_log(interaction.guild, log_doc)
         reviews_cog = self.bot.get_cog("ReviewsCog")
-        if result.newly_completed and reviews_cog is not None:
+        if result.newly_completed and reviews_cog is not None and not product.get("boost_enabled"):
             category = None
             if product.get("category_id"):
                 category = await self.repos.product_categories.get(interaction.guild.id, product["category_id"])
@@ -888,6 +892,12 @@ class VendingArchiveCog(commands.Cog):
                 purchased_at=log_doc.get("purchased_at"),
                 amount=price,
             )
+        if product.get("boost_enabled"):
+            await interaction.followup.send(
+                embed=success_embed("부스트 주문 접수", f"{product['boost_months']}개월 부스트 {product['boost_quantity']}개 주문을 접수했습니다.\n부스트 봇의 DM에 서버 초대링크를 보내주세요. DM 수신을 허용해주세요.\n재고가 부족하면 재입고 후 DM에 링크를 다시 보내주세요.\n주문번호: `{result.operation_id}`\n`/부스트주문조회`로 처리 상태를 확인할 수 있습니다."),
+                ephemeral=True,
+            )
+            return
         if product.get("topup_enabled"):
             if product.get("topup_kind", "tokens") == "plan":
                 delivery = f"{product['topup_plan'].upper()} 플랜 {int(product['topup_months'])}개월"
@@ -1133,6 +1143,7 @@ class VendingArchiveCog(commands.Cog):
                 "product_id_lower": {"$in": product_ids_lower},
                 "status": "purchased",
                 "topup_enabled": {"$ne": True},
+                "boost_enabled": {"$ne": True},
             }
         ).to_list(length=25)
         owned_by_id = {owned["product_id_lower"]: owned for owned in owned_products}
@@ -1422,6 +1433,10 @@ class VendingArchiveCog(commands.Cog):
     @app_commands.command(name="상품등록", description="자판기 상품을 등록하거나 수정합니다.")
     @app_commands.default_permissions(send_messages=True)
     @app_commands.choices(
+        boost_months=[
+            app_commands.Choice(name="1개월", value=1),
+            app_commands.Choice(name="3개월", value=3),
+        ],
         plan=[
             app_commands.Choice(name="Plus", value="plus"),
             app_commands.Choice(name="Pro", value="pro"),
@@ -1448,6 +1463,9 @@ class VendingArchiveCog(commands.Cog):
         tokens="토큰 상품일 때 충전할 토큰 수",
         plan="플랜 상품일 때 plus 또는 pro",
         months="플랜 적용 개월: 1, 2, 3, 6",
+        boost_on="부스트 주문 API ON/OFF (토큰/플랜 API와 동시 사용 불가)",
+        boost_months="부스트 기간: 1 또는 3개월",
+        boost_quantity="부스트 수량: 2~1000 사이의 짝수",
     )
     async def register_product(
         self,
@@ -1466,6 +1484,9 @@ class VendingArchiveCog(commands.Cog):
         tokens: int = 0,
         plan: str = "",
         months: int = 0,
+        boost_on: bool = False,
+        boost_months: int = 0,
+        boost_quantity: int = 0,
     ):
         await interaction.response.defer(ephemeral=True)
         if not await self.staff_allowed(interaction):
@@ -1479,6 +1500,14 @@ class VendingArchiveCog(commands.Cog):
             return
         product_type = "stock" if 재고형 else "standing"
         plan = plan.strip().casefold()
+        if boost_on:
+            try:
+                validate_boost(boost_months, boost_quantity)
+                if api_on or 재고형:
+                    raise ValueError("conflicting delivery")
+            except ValueError:
+                await interaction.followup.send(embed=error_embed("부스트 설정 오류", "부스트는 상시 판매 상품에서 단독으로 켜주세요. 기간은 1/3개월, 수량은 2~1000 사이의 짝수입니다."), ephemeral=True)
+                return
         if api_on and 재고형:
             await interaction.followup.send(embed=error_embed("API 설정 오류", "API 상품은 재고형을 끄고 등록해주세요."), ephemeral=True)
             return
@@ -1488,7 +1517,7 @@ class VendingArchiveCog(commands.Cog):
         if api_on and not plan and tokens <= 0:
             await interaction.followup.send(embed=error_embed("토큰 설정 오류", "토큰 상품은 tokens를 1 이상 입력해주세요."), ephemeral=True)
             return
-        if product_type == "standing" and not api_on and not is_http_url(terabox_url):
+        if product_type == "standing" and not api_on and not boost_on and not is_http_url(terabox_url):
             await interaction.followup.send(
                 embed=error_embed("링크 오류", "상시 판매 상품은 테라박스 링크(http 또는 https URL)가 필요합니다."),
                 ephemeral=True,
@@ -1532,6 +1561,9 @@ class VendingArchiveCog(commands.Cog):
             thread_id=parse_discord_id(thread_id),
             page_url=page_url,
             product_type=product_type,
+            boost_enabled=boost_on,
+            boost_months=boost_months,
+            boost_quantity=boost_quantity,
             topup_enabled=api_on,
             topup_tokens=tokens,
             topup_plan=plan,
@@ -1548,10 +1580,30 @@ class VendingArchiveCog(commands.Cog):
         else:
             api_label = "OFF"
         note += f"\nAPI 지급: {api_label}"
+        note += f"\n부스트 API: {'ON · ' + str(boost_months) + '개월 · ' + str(boost_quantity) + '개' if boost_on else 'OFF'}"
         await interaction.followup.send(
             embed=success_embed("상품 등록 완료", f"`{product['product_id']}` -> {category['name']} ({type_label}){note}"),
             ephemeral=True,
         )
+
+    @app_commands.command(name="부스트주문조회", description="본인의 부스트 주문 처리 상태를 확인합니다.")
+    @app_commands.describe(order_id="구매 시 안내받은 주문번호")
+    async def boost_order_status(self, interaction: discord.Interaction, order_id: str):
+        await interaction.response.defer(ephemeral=True)
+        order = await self.repos.vending.purchase_logs.find_one({
+            "_id": order_id, "guild_id": interaction.guild.id,
+            "user_id": interaction.user.id, "boost_enabled": True,
+        })
+        if order is None:
+            await interaction.followup.send(embed=error_embed("주문 없음", "본인의 접수된 부스트 주문번호를 입력해주세요."), ephemeral=True)
+            return
+        try:
+            response = await call_boost("GET", "/orders/" + quote(order_id, safe=":"))
+        except TopupPendingError:
+            await interaction.followup.send(embed=error_embed("조회 실패", "잠시 후 다시 조회해주세요."), ephemeral=True)
+            return
+        status = json.dumps(response["result"], ensure_ascii=False, indent=2)
+        await interaction.followup.send(embed=info_embed("부스트 주문 상태", f"주문번호: `{order_id}`\n```json\n{status[:3000]}\n```"), ephemeral=True)
 
     @app_commands.command(name="상품삭제", description="자판기 상품을 비활성화합니다.")
     @app_commands.default_permissions(send_messages=True)
