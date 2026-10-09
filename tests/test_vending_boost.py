@@ -80,3 +80,49 @@ class BoostClientTests(unittest.IsolatedAsyncioTestCase):
                 response.status = status
                 with self.assertRaises(TopupPendingError):
                     await order_boost(123, 3, 14, 'purchase:abc')
+
+
+class BoostRepositoryTests(unittest.IsolatedAsyncioTestCase):
+    async def test_product_upsert_persists_boost_and_off_clears_settings(self):
+        from database.vending import ProductStore
+        collection = MagicMock()
+        collection.update_one = AsyncMock()
+        collection.find_one = AsyncMock(return_value={})
+        store = ProductStore({'products': collection})
+        await store.upsert(1, 'boost', title='Boost', price=1000,
+                           terabox_url='', boost_enabled=True,
+                           boost_months=3, boost_quantity=14)
+        saved = collection.update_one.await_args.args[1]['$set']
+        self.assertTrue(saved['boost_enabled'])
+        self.assertEqual((saved['boost_months'], saved['boost_quantity']), (3, 14))
+        await store.upsert(1, 'boost', title='Download', price=1000,
+                           terabox_url='https://example.test/file', boost_enabled=False,
+                           boost_months=3, boost_quantity=14)
+        saved = collection.update_one.await_args.args[1]['$set']
+        self.assertFalse(saved['boost_enabled'])
+        self.assertEqual((saved['boost_months'], saved['boost_quantity']), (0, 0))
+
+    async def test_cog_replaces_repository_with_old_upsert_signature(self):
+        from types import SimpleNamespace
+        from cogs.cogs_vending_archive import VendingArchiveCog
+        from database.vending import ProductStore, VendingLogStore
+
+        class OldProductStore:
+            async def upsert(self, guild_id, product_id, *, title, price, terabox_url):
+                raise AssertionError('old upsert must not be called')
+
+        db = MagicMock()
+        db.__getitem__.return_value.create_index = AsyncMock()
+        old_vending = object()
+        repos = SimpleNamespace(products=OldProductStore(), vending=old_vending,
+                                archives=object(), product_categories=object(),
+                                vending_stock=object())
+        cog = object.__new__(VendingArchiveCog)
+        cog.bot = SimpleNamespace(db=db, repos=repos)
+        await cog.ensure_vending_stores()
+        self.assertIsInstance(repos.products, ProductStore)
+        self.assertIsInstance(repos.vending, VendingLogStore)
+        self.assertIsNot(repos.vending, old_vending)
+        current = repos.products
+        await cog.ensure_vending_stores()
+        self.assertIs(repos.products, current)

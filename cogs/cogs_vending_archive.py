@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import io
+import inspect
 import json
 import re
 from collections.abc import Callable
@@ -189,9 +190,22 @@ class VendingArchiveCog(commands.Cog):
         if not hasattr(repos, "product_categories"):
             repos.product_categories = ProductCategoryStore(db)
             missing_stores.append(repos.product_categories)
-        if not hasattr(repos, "products"):
+        # A reloaded cog may share repositories created before BOOST support.
+        # Never drop the new fields to accommodate an old repository: that
+        # would silently register a BOOST product without its delivery config.
+        products = getattr(repos, "products", None)
+        if products is None or "boost_enabled" not in inspect.signature(products.upsert).parameters:
+            if "boost_enabled" not in inspect.signature(ProductStore.upsert).parameters:
+                raise RuntimeError(
+                    "BOOST repository code is outdated. Update database/vending.py "
+                    "and restart the entire bot process."
+                )
             repos.products = ProductStore(db)
             missing_stores.append(repos.products)
+            # Renew the entitlement store too: old reserve_product code treats
+            # BOOST orders as permanent downloads and prevents repeat orders.
+            repos.vending = VendingLogStore(db)
+            missing_stores.append(repos.vending)
         if not hasattr(repos, "archives"):
             repos.archives = ArchiveStore(db)
             missing_stores.append(repos.archives)
