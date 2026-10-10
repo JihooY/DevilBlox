@@ -244,6 +244,32 @@ class VendingComponentLayoutTests(unittest.TestCase):
         self.assertEqual(message_attachment_url(message, "proof.png"), "proof-url")
 
 class VendingComponentCallbackTests(unittest.IsolatedAsyncioTestCase):
+    async def test_boost_purchase_requests_review_independently(self) -> None:
+        product = dict(product_id="boost", boost_enabled=True, boost_months=1,
+                       boost_quantity=4, title="Boost")
+        result = SimpleNamespace(product=product, status="purchased", newly_completed=True,
+                                 log={"purchased_at": None}, spent={"user": {}},
+                                 price=1000, original_price=1000, applied_code=None,
+                                 operation_id="purchase:test")
+        reviews = SimpleNamespace(request_review=AsyncMock())
+        repos = SimpleNamespace(products=SimpleNamespace(get=AsyncMock(return_value=product)))
+        cog = object.__new__(VendingArchiveCog)
+        cog.bot = SimpleNamespace(repos=repos, get_cog=lambda name: reviews if name == "ReviewsCog" else None)
+        cog.commerce = SimpleNamespace(purchase=AsyncMock(return_value=result))
+        cog.send_purchase_log = AsyncMock()
+        interaction = SimpleNamespace(guild=SimpleNamespace(id=1),
+                                      user=SimpleNamespace(id=2),
+                                      response=SimpleNamespace(defer=AsyncMock()),
+                                      followup=SimpleNamespace(send=AsyncMock()))
+        await cog.handle_purchase(interaction, "boost")
+        reviews.request_review.assert_awaited_once()
+        self.assertEqual(reviews.request_review.await_args.kwargs["buyer_id"], 2)
+        self.assertEqual(interaction.followup.send.await_args.kwargs["embed"].title,
+                         "부스트 주문 접수")
+        result.newly_completed = False
+        await cog.handle_purchase(interaction, "boost")
+        reviews.request_review.assert_awaited_once()
+
     async def test_archive_buy_button_preserves_modal_callback(self) -> None:
         cog = SimpleNamespace(product_thread_mention=lambda product: "`미설정`")
         view = ArchiveResultView(cog, "product-1", None)

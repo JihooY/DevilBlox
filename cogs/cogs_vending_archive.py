@@ -890,7 +890,7 @@ class VendingArchiveCog(commands.Cog):
         if result.newly_completed:
             await self.send_purchase_log(interaction.guild, log_doc)
         reviews_cog = self.bot.get_cog("ReviewsCog")
-        if result.newly_completed and reviews_cog is not None and not product.get("boost_enabled"):
+        if result.newly_completed and reviews_cog is not None:
             category = None
             if product.get("category_id"):
                 category = await self.repos.product_categories.get(interaction.guild.id, product["category_id"])
