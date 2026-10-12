@@ -394,7 +394,10 @@ class VerifyComponentsTests(unittest.IsolatedAsyncioTestCase):
             settings=SimpleNamespace(
                 get=AsyncMock(return_value={"roles": {"verified": role.id}})
             ),
-            users=SimpleNamespace(set_verified=AsyncMock()),
+            users=SimpleNamespace(
+                get=AsyncMock(return_value={"verified_at": "already-verified"}),
+                set_verified=AsyncMock(),
+            ),
             send_verify_log=AsyncMock(),
         )
         pad = VerifyPad(cog, user_id=2, code="1234", gif_name=None)
@@ -404,7 +407,8 @@ class VerifyComponentsTests(unittest.IsolatedAsyncioTestCase):
         interaction = SimpleNamespace(
             user=user,
             guild=guild,
-            response=SimpleNamespace(edit_message=AsyncMock()),
+            response=SimpleNamespace(edit_message=AsyncMock(), defer=AsyncMock()),
+            edit_original_response=AsyncMock(),
         )
 
         await pad.confirm(interaction)
@@ -417,7 +421,7 @@ class VerifyComponentsTests(unittest.IsolatedAsyncioTestCase):
         cog.send_verify_log.assert_awaited_once_with(interaction, role)
         self.assertEqual(pad.display_status, "VERIFIED")
         self.assertTrue(pad.controls_disabled)
-        kwargs = interaction.response.edit_message.await_args.kwargs
+        kwargs = interaction.edit_original_response.await_args.kwargs
         self.assertIsNone(kwargs["content"])
         self.assertEqual(kwargs["embeds"], [])
 

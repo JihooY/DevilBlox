@@ -102,19 +102,40 @@ class VendingTranslationTests(unittest.IsolatedAsyncioTestCase):
                 OWNER.reset(owner)
                 LANGUAGE.reset(token)
 
-    async def test_persistent_panel_actions_offer_private_language_choice(self):
-        view = VendingPanelView(SimpleNamespace())
-        self.assertTrue(view.is_persistent())
-        for action in ("charge", "catalog", "buy", "download"):
-            event = interaction()
-            with patch("cogs.vending_views.branded_files", return_value=[]):
+    async def test_persistent_panel_actions_use_saved_language_without_prompt(self):
+        for language in LANGUAGES:
+            async def category_menu(event, mode):
+                await event.followup.send(view=CategoryMenuView(cog, [{"category_id": "cat"}], mode))
+
+            async def download_menu(event):
+                await event.followup.send(view=DownloadSelectView(cog, [PRODUCT]))
+
+            cog = SimpleNamespace(
+                repos=SimpleNamespace(users=SimpleNamespace(get=AsyncMock(return_value={"default_language": language}))),
+                handle_category_menu=category_menu, handle_download_menu=download_menu,
+            )
+            view = VendingPanelView(cog)
+            self.assertTrue(view.is_persistent())
+            for action in ("charge", "catalog", "buy", "download"):
+                event = interaction()
                 await getattr(view, action)(event)
-            kwargs = event.response.send_message.await_args.kwargs
-            self.assertTrue(kwargs["ephemeral"])
-            select = next(item for item in kwargs["view"].walk_children()
-                          if isinstance(item, discord.ui.Select))
-            self.assertEqual(select.action, action)
-            self.assertEqual([option.value for option in select.options], list(LANGUAGES))
+                if action == "charge":
+                    result = event.response.send_modal.await_args.args[0]
+                else:
+                    result = event.followup.send.await_args.kwargs["view"]
+                self.assertEqual(result.language, language)
+                self.assertEqual(result.user_id, event.user.id)
+                event.response.send_message.assert_not_awaited()
+                self.assertEqual(LANGUAGE.get(), "ko")
+                self.assertIsNone(OWNER.get())
+
+    async def test_legacy_user_without_language_can_top_up_directly_in_korean(self):
+        cog = SimpleNamespace(repos=SimpleNamespace(users=SimpleNamespace(get=AsyncMock(return_value=None))))
+        event = interaction()
+        await VendingPanelView(cog).charge(event)
+        modal = event.response.send_modal.await_args.args[0]
+        self.assertEqual(modal.language, "ko")
+        event.response.send_message.assert_not_awaited()
 
     async def test_concurrent_language_selections_do_not_mix(self):
         async def category_menu(event, mode):

@@ -27,12 +27,12 @@ from utils.gifs import (
 )
 from utils.panels import save_panel_location
 from utils.roles import has_role
+from utils.preferences import LANGUAGES
 
 VERIFY_TIMEOUT = 120
 MAX_ATTEMPTS = 3
 
 
-LANGUAGES = {"ko": "한국어", "ja": "日本語", "en": "English", "zh": "中文"}
 TEXT = {
     "ko": ["화면의 보안 코드를 아래 버튼으로 입력하세요.", "보안 코드", "입력 상태", "상태", "남은 시간", "초", "남은 시도", "본인 인증 세션만 조작할 수 있습니다.", "인증 시도 횟수를 초과했습니다. 새 인증 세션을 시작해주세요.", "입력한 코드가 일치하지 않습니다. 다시 입력해주세요.", "`/역할설정`으로 인증 역할을 먼저 설정해주세요.", "봇 역할이 인증 역할보다 낮거나 역할 관리 권한이 없습니다.", "인증이 완료되어 {role} 역할이 지급되었습니다.", "인증 시간이 만료되었습니다. 다시 시작해주세요.", "서버 안에서만 사용할 수 있습니다.", "이미 인증이 완료되어 있습니다.", "삭제", "확인", "입력 대기", "잠김", "잘못된 코드", "설정 오류", "권한 오류", "인증 완료", "시간 만료"],
     "en": ["Enter the security code using the buttons below.", "Security code", "Your input", "Status", "Time left", "s", "Attempts left", "You can only use your own verification session.", "Too many attempts. Please start a new verification session.", "Incorrect code. Please try again.", "Please configure the verification role with `/역할설정` first.", "The bot needs Manage Roles permission and a role above the verification role.", "Verification complete. You received the {role} role.", "Verification timed out. Please start again.", "This is only available in a server.", "You are already verified.", "DELETE", "CONFIRM", "WAITING INPUT", "LOCKED", "INVALID CODE", "CONFIGURATION ERROR", "PERMISSION ERROR", "VERIFIED", "EXPIRED"],
@@ -236,6 +236,9 @@ class VerifyPad(discord.ui.LayoutView):
     async def confirm(self, interaction: discord.Interaction):
         if not await self.interaction_allowed(interaction):
             return
+        if self.controls_disabled or self.is_finished():
+            await interaction.response.send_message(self.text[13], ephemeral=True)
+            return
 
         if self.input_code != self.code:
             self.attempts += 1
@@ -270,6 +273,10 @@ class VerifyPad(discord.ui.LayoutView):
             await interaction.response.edit_message(**self._edit_kwargs())
             return
 
+        self.disable_controls()
+        await interaction.response.defer()
+        user = await self.cog.users.get(interaction.guild.id, interaction.user.id)
+        first_verification = not (user or {}).get("verified_at")
         try:
             await interaction.user.add_roles(role, reason="DevilBlox verification completed")
         except discord.Forbidden:
@@ -279,18 +286,24 @@ class VerifyPad(discord.ui.LayoutView):
                 0xE5484D,
                 self.text[11],
             )
-            await interaction.response.edit_message(**self._edit_kwargs())
+            await interaction.edit_original_response(**self._edit_kwargs())
             return
 
         await self.cog.users.set_verified(interaction.guild.id, interaction.user.id, role.id)
+        if first_verification and (user or {}).get("default_language") not in LANGUAGES:
+            await self.cog.users.set_default_language(interaction.guild.id, interaction.user.id, self.language)
         self.disable_controls()
-        await self.cog.send_verify_log(interaction, role)
         self._render(
             "VERIFIED",
             0x2ECC71,
             self.text[12].format(role=role.mention),
         )
-        await interaction.response.edit_message(**self._edit_kwargs())
+        await interaction.edit_original_response(**self._edit_kwargs())
+        self.stop()
+        if first_verification:
+            from cogs.profile_views import send_profile
+            await send_profile(interaction, self.cog.repos, welcome=True)
+        await self.cog.send_verify_log(interaction, role)
 
     async def on_timeout(self):
         self.disable_controls()

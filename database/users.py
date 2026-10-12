@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 
 from pymongo import ReturnDocument
+from utils.preferences import LANGUAGES
 
 
 def _now():
@@ -37,6 +38,7 @@ class UserStore:
                     "cash": 0,
                     "cash_operations": [],
                     "verified_at": None,
+                    "default_language": None,
                     "created_at": now,
                 },
                 "$set": {"updated_at": now},
@@ -237,6 +239,16 @@ class UserStore:
             {"_id": user_key(guild_id, user_id)},
             {"$set": {"grade_role_id": role_id, "updated_at": _now()}},
         )
+
+    async def set_default_language(self, guild_id: int, user_id: int, language: str):
+        if language not in LANGUAGES:
+            raise ValueError("unsupported language")
+        await self.ensure_user(guild_id, user_id)
+        await self.collection.update_one(
+            {"_id": user_key(guild_id, user_id)},
+            {"$set": {"default_language": language, "updated_at": _now()}},
+        )
+        return await self.get(guild_id, user_id)
 
     async def set_verified(self, guild_id: int, user_id: int, role_id: int | None):
         await self.ensure_user(guild_id, user_id, role_id)

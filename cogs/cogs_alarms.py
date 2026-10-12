@@ -22,6 +22,7 @@ from utils.gifs import (
     retained_non_gif_attachments,
 )
 from utils.panels import save_panel_location
+from services.user_preferences import toggle_notification
 
 
 def _panel_send_kwargs(view: discord.ui.LayoutView, gif_name: str | None) -> dict:
@@ -102,21 +103,28 @@ class AlarmView(discord.ui.LayoutView):
         self.add_item(container)
 
     async def toggle_role(self, interaction: discord.Interaction, role_key: str, label: str):
-        settings = await self.cog.repos.settings.get(interaction.guild.id)
-        role = interaction.guild.get_role(settings["roles"].get(role_key) or 0)
-        if role is None:
-            await interaction.response.send_message(
+        if interaction.guild is None:
+            await interaction.response.send_message("서버 안에서만 사용할 수 있습니다.", ephemeral=True)
+            return
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        try:
+            _, enabled = await toggle_notification(
+                self.cog.repos, interaction.guild, interaction.user, role_key,
+            )
+        except ValueError:
+            await interaction.followup.send(
                 embed=error_embed("알림 역할 미설정", f"`/역할설정`으로 {label} 역할을 먼저 설정해주세요."),
                 ephemeral=True,
             )
             return
-
-        if role in interaction.user.roles:
-            await interaction.user.remove_roles(role, reason="DevilBlox alarm toggle")
-            await interaction.response.send_message(embed=success_embed("알림 해제", f"{label}을 비활성화했습니다."), ephemeral=True)
-        else:
-            await interaction.user.add_roles(role, reason="DevilBlox alarm toggle")
-            await interaction.response.send_message(embed=success_embed("알림 설정", f"{label}을 활성화했습니다."), ephemeral=True)
+        except discord.Forbidden:
+            await interaction.followup.send(embed=error_embed("알림 변경 실패", "봇의 역할 관리 권한과 역할 순서를 확인해주세요."), ephemeral=True)
+            return
+        except discord.HTTPException:
+            await interaction.followup.send(embed=error_embed("알림 변경 실패", "잠시 후 다시 시도해주세요."), ephemeral=True)
+            return
+        title, state = ("알림 설정", "활성화") if enabled else ("알림 해제", "비활성화")
+        await interaction.followup.send(embed=success_embed(title, f"{label}을 {state}했습니다."), ephemeral=True)
 
     async def announcement(self, interaction: discord.Interaction):
         await self.toggle_role(interaction, "alarm_announcement", "공지 알림")

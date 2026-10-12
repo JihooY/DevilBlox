@@ -6,8 +6,8 @@ are passed through unchanged. Context variables isolate simultaneous buyers.
 from contextvars import ContextVar
 from functools import wraps
 import inspect
+from utils.preferences import LANGUAGES
 
-LANGUAGES = {"ko": "한국어", "ja": "日本語", "en": "English", "zh": "中文"}
 LANGUAGE = ContextVar("vending_language", default="ko")
 OWNER = ContextVar("vending_owner", default=None)
 

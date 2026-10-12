@@ -8,6 +8,7 @@ import discord
 from database.vending import normalize_product_id
 from utils.embeds import BRAND_LOGO_URL, branded_files, error_embed
 from utils.gifs import gif_media_url
+from utils.preferences import default_language
 from utils.vending_i18n import LANGUAGES, LANGUAGE, OWNER, localized_component, tr
 
 if TYPE_CHECKING:
@@ -299,8 +300,13 @@ class VendingPanelView(discord.ui.LayoutView):
             container.add_item(discord.ui.TextDisplay("\n".join(section_lines)))
         add_panel_gif(container, gif_name, "DevilBlox vending panel")
         container.add_item(discord.ui.Separator())
-        language_select = VendingLanguageSelect(cog, self.user_id)
-        container.add_item(discord.ui.ActionRow(language_select))
+        profile_button = discord.ui.Button(
+            label="PROFILE · 언어 / 알림",
+            style=discord.ButtonStyle.secondary,
+            custom_id="devilblox:vending:profile",
+        )
+        profile_button.callback = self.profile
+        container.add_item(discord.ui.ActionRow(profile_button))
 
         charge_button = discord.ui.Button(
             label=tr("충전"),
@@ -356,9 +362,18 @@ class VendingPanelView(discord.ui.LayoutView):
     async def choose_language(self, interaction: discord.Interaction, action: str) -> bool:
         if self.user_id is not None:
             return False
-        view = VendingLanguageView(self.cog, interaction.user.id, action)
-        await interaction.response.send_message(view=view, files=branded_files(), ephemeral=True)
+        if interaction.guild is None:
+            await interaction.response.send_message("서버 안에서만 사용할 수 있습니다.", ephemeral=True)
+            return True
+        user = await self.cog.repos.users.get(interaction.guild.id, interaction.user.id)
+        await VendingLanguageSelect(self.cog, interaction.user.id, action).open_language(
+            interaction, default_language(user),
+        )
         return True
+
+    async def profile(self, interaction: discord.Interaction):
+        from cogs.profile_views import send_profile
+        await send_profile(interaction, self.cog.repos)
 
 
 class VendingLanguageSelect(discord.ui.Select):
