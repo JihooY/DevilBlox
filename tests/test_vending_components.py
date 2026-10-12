@@ -55,9 +55,11 @@ class VendingComponentLayoutTests(unittest.TestCase):
         self.assertIn("Products for sale `25`", text)
         self.assertIn("### 🇯🇵 日本語", text)
         self.assertIn("販売商品 `25`件", text)
+        self.assertIn("### 🇨🇳 中文", text)
+        self.assertIn("在售商品 `25`件", text)
         self.assertEqual(
             sum(isinstance(item, discord.ui.Separator) for item in view.children[0].children),
-            4,
+            5,
         )
         buttons = view_buttons(view)
         self.assertEqual(len(buttons), 4)

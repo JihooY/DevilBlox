@@ -37,6 +37,7 @@ from utils.embeds import (
     info_embed,
     success_embed,
 )
+from utils.gifs import gif_file
 from utils.panels import save_panel_location
 from utils.roles import has_role
 from utils.tickets import safe_channel_name
@@ -159,12 +160,17 @@ def _add_brand_section(container: discord.ui.Container, content: str) -> None:
     )
 
 
-def _layout_send_kwargs(view: discord.ui.LayoutView, *, mentions=None) -> dict:
+def _layout_send_kwargs(
+    view: discord.ui.LayoutView,
+    *,
+    mentions=None,
+    gif_name: str | None = None,
+) -> dict:
     kwargs: dict = {
         "view": view,
         "allowed_mentions": mentions or discord.AllowedMentions.none(),
     }
-    files = branded_files()
+    files = branded_files(gif_file(gif_name))
     if files:
         kwargs["files"] = files
     return kwargs

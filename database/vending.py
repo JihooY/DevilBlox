@@ -430,6 +430,7 @@ class VendingLogStore:
         proof_filename: str = "",
         proof_content_type: str = "",
         proof_size: int = 0,
+        language: str = "ko",
     ):
         amount = int(amount)
         if amount <= 0:
@@ -442,6 +443,7 @@ class VendingLogStore:
             "proof_filename": proof_filename,
             "proof_content_type": proof_content_type,
             "proof_size": int(proof_size or 0),
+            "language": language if language in {"ko", "ja", "en", "zh"} else "ko",
             "status": "pending",
             "requested_at": _now(),
             "updated_at": _now(),

@@ -19,6 +19,7 @@ from cogs.cogs_brokerage import (
     BrokerageReportModal,
     BrokerageReviewModal,
     BrokerageReviewRequestView,
+    BrokerageRulesView,
     BrokerageTicketView,
     BrokerageVerificationView,
     BrokerageVerificationCodeView,
@@ -27,6 +28,7 @@ from cogs.cogs_brokerage import (
     _listing_markdown,
     _profile_markdown,
 )
+from cogs.brokerage.commands import BrokerageCommandMixin
 
 
 def member(user_id: int = 123, name: str = "tester") -> SimpleNamespace:
@@ -116,6 +118,7 @@ class BrokerageComponentCallbackTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsInstance(report_modal, BrokerageReportModal)
         self.assertEqual(report_modal.listing_id, "listing-42")
 
+
     async def test_ticket_and_review_buttons_delegate_with_object_ids(self) -> None:
         cog = SimpleNamespace(complete_sale=AsyncMock(), cancel_and_promote=AsyncMock())
         ticket = BrokerageTicketView(cog, "listing-42", 987)
@@ -188,6 +191,44 @@ class BrokerageComponentCallbackTests(unittest.IsolatedAsyncioTestCase):
         kwargs = interaction.response.send_message.await_args.kwargs
         self.assertEqual(kwargs["embed"].title, "권한 없음")
         self.assertTrue(kwargs["ephemeral"])
+
+class BrokerageRulesCommandTests(unittest.IsolatedAsyncioTestCase):
+    async def test_rules_command_posts_public_container_with_gif_in_current_channel(
+        self,
+    ) -> None:
+        channel = SimpleNamespace(
+            send=AsyncMock(
+                return_value=SimpleNamespace(jump_url="https://discord.example/rules")
+            )
+        )
+        interaction = SimpleNamespace(
+            channel=channel,
+            response=SimpleNamespace(send_message=AsyncMock(), defer=AsyncMock()),
+            followup=SimpleNamespace(send=AsyncMock()),
+        )
+        cog = SimpleNamespace(is_admin=AsyncMock(return_value=True))
+
+        with patch(
+            "cogs.brokerage.commands.choose_gif",
+            return_value="success.gif",
+        ):
+            await BrokerageCommandMixin.brokerage_rules.callback(cog, interaction)
+
+        cog.is_admin.assert_awaited_once_with(interaction)
+        interaction.response.defer.assert_awaited_once_with(ephemeral=True)
+        channel.send.assert_awaited_once()
+        public_kwargs = channel.send.await_args.kwargs
+        self.assertIsInstance(public_kwargs["view"], BrokerageRulesView)
+        self.assertIn(
+            "success.gif",
+            {uploaded.filename for uploaded in public_kwargs.get("files", [])},
+        )
+        interaction.followup.send.assert_awaited_once()
+        self.assertTrue(
+            interaction.followup.send.await_args.kwargs["ephemeral"]
+        )
+        close_uploaded_files(public_kwargs)
+
 
 class BrokerageGuildIsolationTests(unittest.IsolatedAsyncioTestCase):
     def build(self, operation_name: str) -> tuple[BrokerageCog, SimpleNamespace, AsyncMock]:

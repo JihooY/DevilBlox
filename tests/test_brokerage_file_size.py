@@ -34,6 +34,7 @@ class BrokerageFileSizePolicyTests(unittest.TestCase):
         expected = {
             "거래중개패널",
             "거래중개관리패널",
+            "거래중개규칙",
             "신용도조정",
             "거래삭제",
             "거래문제처리",

@@ -37,6 +37,7 @@ from utils.embeds import (
     info_embed,
     success_embed,
 )
+from utils.gifs import PANEL_GIFS, choose_gif
 from utils.panels import save_panel_location
 from utils.roles import has_role
 from utils.tickets import safe_channel_name
@@ -63,6 +64,7 @@ from .components import (
     BrokerageMessageView,
     BrokerageNotificationView,
     BrokeragePanelView,
+    BrokerageRulesView,
     BrokerageReviewRequestView,
     BrokerageTicketView,
     BrokerageVerificationCodeView,
@@ -72,6 +74,28 @@ log = logging.getLogger(__name__)
 
 
 class BrokerageCommandMixin:
+    @app_commands.command(name="거래중개규칙", description="현재 채널에 ROBLOX 계정거래 운영 규칙을 게시합니다.")
+    @app_commands.guild_only()
+    @app_commands.default_permissions(administrator=True)
+    async def brokerage_rules(self, interaction: discord.Interaction) -> None:
+        if not await self.is_admin(interaction):
+            await interaction.response.send_message(
+                embed=error_embed("권한 없음", "관리자만 거래중개 규칙을 게시할 수 있습니다."),
+                ephemeral=True,
+            )
+            return
+
+        await interaction.response.defer(ephemeral=True)
+        gif_name = choose_gif(PANEL_GIFS)
+        view = BrokerageRulesView(gif_name)
+        message = await interaction.channel.send(
+            **_layout_send_kwargs(view, gif_name=gif_name)
+        )
+        await interaction.followup.send(
+            embed=success_embed("거래중개 규칙 게시 완료", message.jump_url),
+            ephemeral=True,
+        )
+
     @app_commands.command(name="거래중개패널", description="현재 채널에 거래중개 통합 패널을 생성합니다.")
     @app_commands.guild_only()
     @app_commands.default_permissions(administrator=True)

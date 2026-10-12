@@ -6,8 +6,9 @@ from typing import TYPE_CHECKING
 import discord
 
 from database.vending import normalize_product_id
-from utils.embeds import BRAND_LOGO_URL, error_embed
+from utils.embeds import BRAND_LOGO_URL, branded_files, error_embed
 from utils.gifs import gif_media_url
+from utils.vending_i18n import LANGUAGES, LANGUAGE, OWNER, localized_component, tr
 
 if TYPE_CHECKING:
     from cogs.cogs_vending_archive import VendingArchiveCog
@@ -51,26 +52,20 @@ def add_brand_section(container: discord.ui.Container, content: str):
     )
 
 
+@localized_component
 class ChargeRequestModal(discord.ui.Modal, title="충전 신청"):
-    depositor_name = discord.ui.TextInput(
-        label="입금자명",
-        placeholder="입금자명을 입력하세요.",
-        max_length=50,
-    )
-    amount = discord.ui.TextInput(
-        label="입금 금액",
-        placeholder="예: 10000",
-        max_length=20,
-    )
-
     def __init__(self, cog: VendingArchiveCog):
         super().__init__()
         self.cog = cog
+        self.depositor_name = discord.ui.TextInput(placeholder=tr('입금자명을 입력하세요.'), max_length=50)
+        self.amount = discord.ui.TextInput(placeholder=tr('예: 10000'), max_length=20)
+        self.add_item(discord.ui.Label(text=tr('입금자명'), component=self.depositor_name))
+        self.add_item(discord.ui.Label(text=tr('입금 금액'), component=self.amount))
         self.proof_upload = discord.ui.FileUpload(required=True, min_values=1, max_values=1)
         self.add_item(
             discord.ui.Label(
-                text="입금 사진",
-                description="입금 확인용 이미지 1장을 업로드하세요.",
+                text=tr('입금 사진'),
+                description=tr('입금 확인용 이미지 1장을 업로드하세요.'),
                 component=self.proof_upload,
             )
         )
@@ -101,17 +96,17 @@ class RejectChargeModal(discord.ui.Modal, title="충전 거절 사유"):
         await self.cog.handle_reject_charge(interaction, self.admin_message_id, str(self.reason.value))
 
 
+@localized_component
 class ProductPurchaseModal(discord.ui.Modal, title="상품 구매"):
     def __init__(self, cog: VendingArchiveCog, product_id: str = ""):
         super().__init__()
         self.cog = cog
         self.product_id = discord.ui.TextInput(
-            label="상품 ID",
-            placeholder="구매할 상품 ID를 입력하세요.",
+            placeholder=tr('구매할 상품 ID를 입력하세요.'),
             default=product_id,
             max_length=64,
         )
-        self.add_item(self.product_id)
+        self.add_item(discord.ui.Label(text=tr('상품 ID'), component=self.product_id))
 
     async def on_submit(self, interaction: discord.Interaction):
         await self.cog.handle_purchase(interaction, str(self.product_id.value))
@@ -251,9 +246,10 @@ class ChargeAdminView(discord.ui.LayoutView):
         await interaction.response.send_modal(RejectChargeModal(self.cog, interaction.message.id))
 
 
+@localized_component
 class VendingPanelView(discord.ui.LayoutView):
     def __init__(self, cog: VendingArchiveCog, *, stats: dict | None = None, gif_name: str | None = None):
-        super().__init__(timeout=None)
+        super().__init__(timeout=None if self.user_id is None else 180)
         self.cog = cog
 
         bank_account = os.getenv("VENDING_BANK_ACCOUNT", "").strip()
@@ -270,11 +266,16 @@ class VendingPanelView(discord.ui.LayoutView):
                 "### 🇯🇵 日本語",
                 "チャージ、カテゴリー別の商品購入、購入済み商品のダウンロードをご利用いただけます。",
             ],
+            [
+                "### 🇨🇳 中文",
+                "您可以充值余额、按分类浏览和购买商品，并下载已购买的商品。",
+            ],
         ]
         if bank_account:
             language_sections[0].append(f"입금 계좌: `{bank_account}`")
             language_sections[1].append(f"Deposit account: `{bank_account}`")
             language_sections[2].append(f"振込口座: `{bank_account}`")
+            language_sections[3].append(f"付款账户：`{bank_account}`")
         if stats:
             category_count = stats.get("category_count", 0)
             product_count = stats.get("product_count", 0)
@@ -287,38 +288,43 @@ class VendingPanelView(discord.ui.LayoutView):
             language_sections[2].append(
                 f"登録カテゴリー `{category_count}`件・販売商品 `{product_count}`件"
             )
+            language_sections[3].append(f"分类 `{category_count}`个 · 在售商品 `{product_count}`件")
 
         container = discord.ui.Container(accent_color=COLOR_VENDING)
-        add_brand_section(container, "## VENDING MACHINE\n-# 한국어 · English · 日本語")
+        add_brand_section(container, "## VENDING MACHINE\n-# 한국어 · 日本語 · English · 中文")
+        if self.user_id is not None:
+            language_sections = [language_sections[{"ko": 0, "en": 1, "ja": 2, "zh": 3}[self.language]]]
         for section_lines in language_sections:
             container.add_item(discord.ui.Separator(spacing=discord.SeparatorSpacing.small))
             container.add_item(discord.ui.TextDisplay("\n".join(section_lines)))
         add_panel_gif(container, gif_name, "DevilBlox vending panel")
         container.add_item(discord.ui.Separator())
+        language_select = VendingLanguageSelect(cog, self.user_id)
+        container.add_item(discord.ui.ActionRow(language_select))
 
         charge_button = discord.ui.Button(
-            label="충전",
+            label=tr("충전"),
             style=discord.ButtonStyle.success,
             custom_id="devilblox:vending:charge",
         )
         charge_button.callback = self.charge
 
         catalog_button = discord.ui.Button(
-            label="상품목록",
+            label=tr("상품목록"),
             style=discord.ButtonStyle.secondary,
             custom_id="devilblox:vending:catalog",
         )
         catalog_button.callback = self.catalog
 
         buy_button = discord.ui.Button(
-            label="구매",
+            label=tr("구매"),
             style=discord.ButtonStyle.primary,
             custom_id="devilblox:vending:buy",
         )
         buy_button.callback = self.buy
 
         download_button = discord.ui.Button(
-            label="다운로드",
+            label=tr("다운로드"),
             style=discord.ButtonStyle.secondary,
             custom_id="devilblox:vending:download",
         )
@@ -328,16 +334,80 @@ class VendingPanelView(discord.ui.LayoutView):
         self.add_item(container)
 
     async def charge(self, interaction: discord.Interaction):
+        if await self.choose_language(interaction, "charge"):
+            return
         await interaction.response.send_modal(ChargeRequestModal(self.cog))
 
     async def catalog(self, interaction: discord.Interaction):
+        if await self.choose_language(interaction, "catalog"):
+            return
         await self.cog.handle_category_menu(interaction, mode="catalog")
 
     async def buy(self, interaction: discord.Interaction):
+        if await self.choose_language(interaction, "buy"):
+            return
         await self.cog.handle_category_menu(interaction, mode="buy")
 
     async def download(self, interaction: discord.Interaction):
+        if await self.choose_language(interaction, "download"):
+            return
         await self.cog.handle_download_menu(interaction)
+
+    async def choose_language(self, interaction: discord.Interaction, action: str) -> bool:
+        if self.user_id is not None:
+            return False
+        view = VendingLanguageView(self.cog, interaction.user.id, action)
+        await interaction.response.send_message(view=view, files=branded_files(), ephemeral=True)
+        return True
+
+
+class VendingLanguageSelect(discord.ui.Select):
+    def __init__(self, cog: VendingArchiveCog, user_id: int | None = None, action: str | None = None):
+        self.cog = cog
+        self.user_id = user_id
+        self.action = action
+        super().__init__(
+            placeholder="한국어 / 日本語 / English / 中文",
+            custom_id="devilblox:vending:language",
+            options=[discord.SelectOption(label=label, value=code) for code, label in LANGUAGES.items()],
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        await self.open_language(interaction, self.values[0])
+
+    async def open_language(self, interaction: discord.Interaction, language: str):
+        if language not in LANGUAGES:
+            language = "ko"
+        if self.user_id is not None and self.user_id != interaction.user.id:
+            await interaction.response.send_message(tr("본인 세션만 조작할 수 있습니다.", language), ephemeral=True)
+            return
+        token = LANGUAGE.set(language)
+        owner_token = OWNER.set(interaction.user.id)
+        try:
+            if self.action == "charge":
+                await interaction.response.send_modal(ChargeRequestModal(self.cog))
+            elif self.action in {"buy", "catalog"}:
+                await self.cog.handle_category_menu(interaction, mode=self.action)
+            elif self.action == "download":
+                await self.cog.handle_download_menu(interaction)
+            else:
+                await interaction.response.defer(ephemeral=True)
+                stats = await self.cog.vending_panel_stats(interaction.guild.id) if interaction.guild else None
+                await interaction.followup.send(
+                    view=VendingPanelView(self.cog, stats=stats), files=branded_files(), ephemeral=True,
+                )
+        finally:
+            OWNER.reset(owner_token)
+            LANGUAGE.reset(token)
+
+
+class VendingLanguageView(discord.ui.LayoutView):
+    def __init__(self, cog: VendingArchiveCog, user_id: int, action: str):
+        super().__init__(timeout=180)
+        container = discord.ui.Container(accent_color=COLOR_VENDING)
+        container.add_item(discord.ui.TextDisplay("## LANGUAGE\n한국어 / 日本語 / English / 中文"))
+        container.add_item(discord.ui.ActionRow(VendingLanguageSelect(cog, user_id, action)))
+        self.add_item(container)
 
 
 class ArchivePanelView(discord.ui.LayoutView):
@@ -423,6 +493,7 @@ class ArchiveResultView(discord.ui.LayoutView):
         await interaction.response.send_modal(ProductPurchaseModal(self.cog, self.product_id))
 
 
+@localized_component
 class CategorySelect(discord.ui.Select):
     def __init__(
         self,
@@ -437,7 +508,7 @@ class CategorySelect(discord.ui.Select):
         self.mode = mode
         options = []
         for category in categories[:SELECT_OPTION_LIMIT]:
-            label = category.get("name") or category.get("category_id") or "카테고리"
+            label = category.get("name") or category.get("category_id") or tr('카테고리')
             option = discord.SelectOption(
                 label=str(label)[:100],
                 value=str(category.get("category_id_lower") or normalize_product_id(category["category_id"])),
@@ -448,11 +519,11 @@ class CategorySelect(discord.ui.Select):
             options.append(option)
 
         if not options:
-            options.append(discord.SelectOption(label="등록된 카테고리가 없습니다.", value="none"))
+            options.append(discord.SelectOption(label=tr('등록된 카테고리가 없습니다.'), value="none"))
 
-        placeholder = "카테고리를 선택하세요."
+        placeholder = tr('카테고리를 선택하세요.')
         if page_count > 1:
-            placeholder = f"카테고리 선택 ({page_index + 1}/{page_count})"
+            placeholder = tr('카테고리 선택 ({0}/{1})').format(page_index + 1, page_count)
         super().__init__(
             placeholder=placeholder,
             min_values=1,
@@ -465,19 +536,20 @@ class CategorySelect(discord.ui.Select):
         if self.values[0] == "none":
             await interaction.response.defer(ephemeral=True)
             await interaction.followup.send(
-                embed=error_embed("카테고리 없음", "`/상품카테고리등록`으로 카테고리를 먼저 등록해주세요."),
+                embed=error_embed(tr('카테고리 없음'), tr('`/상품카테고리등록`으로 카테고리를 먼저 등록해주세요.')),
                 ephemeral=True,
             )
             return
         await self.cog.handle_category_selected(interaction, self.values[0], self.mode)
 
 
+@localized_component
 class CategoryMenuView(discord.ui.LayoutView):
     def __init__(self, cog: VendingArchiveCog, categories: list[dict], mode: str):
         super().__init__(timeout=180)
-        title = "상품 구매" if mode == "buy" else "상품 목록"
+        title = tr('상품 구매') if mode == "buy" else tr('상품 목록')
         container = discord.ui.Container(accent_color=COLOR_VENDING)
-        add_brand_section(container, f"## {title}\n카테고리를 선택하면 해당 카테고리의 상품이 표시됩니다.")
+        add_brand_section(container, tr('## {0}\n카테고리를 선택하면 해당 카테고리의 상품이 표시됩니다.').format(title))
         container.add_item(discord.ui.Separator())
         category_chunks = chunked(categories)
         for page_index, category_chunk in enumerate(category_chunks):
@@ -495,6 +567,7 @@ class CategoryMenuView(discord.ui.LayoutView):
         self.add_item(container)
 
 
+@localized_component
 class ProductSelect(discord.ui.Select):
     def __init__(
         self,
@@ -516,9 +589,9 @@ class ProductSelect(discord.ui.Select):
             price = int(product.get("price", 0))
             if product.get("product_type") == "stock":
                 stock_count = stock_counts.get(product_id_lower, 0)
-                description = f"{price:,}원 · ID: {product_id} · 재고 {stock_count}개"
+                description = tr('{0:,}원 · ID: {1} · 재고 {2}개').format(price, product_id, stock_count)
             else:
-                description = f"{price:,}원 · ID: {product_id}"
+                description = tr('{0:,}원 · ID: {1}').format(price, product_id)
             options.append(
                 discord.SelectOption(
                     label=str(product.get("title") or product_id)[:100],
@@ -527,11 +600,11 @@ class ProductSelect(discord.ui.Select):
                 )
             )
         if not options:
-            options.append(discord.SelectOption(label="등록된 상품이 없습니다.", value="none"))
+            options.append(discord.SelectOption(label=tr('등록된 상품이 없습니다.'), value="none"))
 
-        placeholder = "상품을 선택하세요."
+        placeholder = tr('상품을 선택하세요.')
         if page_count > 1:
-            placeholder = f"상품 선택 ({page_index + 1}/{page_count})"
+            placeholder = tr('상품 선택 ({0}/{1})').format(page_index + 1, page_count)
         super().__init__(
             placeholder=placeholder,
             min_values=1,
@@ -543,11 +616,12 @@ class ProductSelect(discord.ui.Select):
     async def callback(self, interaction: discord.Interaction):
         if self.values[0] == "none":
             await interaction.response.defer(ephemeral=True)
-            await interaction.followup.send(embed=error_embed("상품 없음", "이 카테고리에 상품이 없습니다."), ephemeral=True)
+            await interaction.followup.send(embed=error_embed(tr('상품 없음'), tr('이 카테고리에 상품이 없습니다.')), ephemeral=True)
             return
         await self.cog.handle_product_selected(interaction, self.values[0], self.mode)
 
 
+@localized_component
 class ProductMenuView(discord.ui.LayoutView):
     def __init__(
         self,
@@ -560,20 +634,20 @@ class ProductMenuView(discord.ui.LayoutView):
     ):
         super().__init__(timeout=180)
         stock_counts = stock_counts or {}
-        category_name = (category or {}).get("name") or "카테고리"
-        lines = [f"## {category_name}", "상품을 선택하면 상세 정보와 구매 버튼이 표시됩니다."]
+        category_name = (category or {}).get("name") or tr('카테고리')
+        lines = [f"## {category_name}", tr('상품을 선택하면 상세 정보와 구매 버튼이 표시됩니다.')]
         if products:
             lines.append("")
             for product in products[:10]:
-                price_line = f"- `{product['product_id']}` · {product.get('title') or product['product_id']} · {int(product.get('price', 0)):,}원"
+                price_line = tr('- `{0}` · {1} · {2:,}원').format(product['product_id'], product.get('title') or product['product_id'], int(product.get('price', 0)))
                 if product.get("product_type") == "stock":
                     product_id_lower = str(
                         product.get("product_id_lower") or normalize_product_id(product["product_id"])
                     )
-                    price_line += f" · 재고 {stock_counts.get(product_id_lower, 0)}개"
+                    price_line += tr(' · 재고 {0}개').format(stock_counts.get(product_id_lower, 0))
                 lines.append(price_line)
             if len(products) > 10:
-                lines.append(f"- 외 {len(products) - 10}개")
+                lines.append(tr('- 외 {0}개').format(len(products) - 10))
 
         container = discord.ui.Container(accent_color=COLOR_VENDING)
         add_brand_section(container, "\n".join(lines))
@@ -595,6 +669,7 @@ class ProductMenuView(discord.ui.LayoutView):
         self.add_item(container)
 
 
+@localized_component
 class ProductDetailView(discord.ui.LayoutView):
     def __init__(self, cog: VendingArchiveCog, product: dict, *, owned: bool = False,
                  discounted_price: int | None = None, applied: dict | None = None,
@@ -608,55 +683,55 @@ class ProductDetailView(discord.ui.LayoutView):
         out_of_stock = is_stock and not owned and (stock_count or 0) <= 0
         lines = [
             f"## {product.get('title') or product['product_id']}",
-            product.get("description") or "등록된 상품 설명이 없습니다.",
+            product.get("description") or tr('등록된 상품 설명이 없습니다.'),
             "",
-            f"상품 ID: `{product['product_id']}`",
-            f"가격: `{int(product.get('price', 0)):,}원`",
-            f"상품 페이지: {cog.product_thread_mention(product)}",
+            tr('상품 ID: `{0}`').format(product['product_id']),
+            tr('가격: `{0:,}원`').format(int(product.get('price', 0))),
+            tr('상품 페이지: {0}').format(cog.product_thread_mention(product)),
         ]
         if is_stock:
-            lines.append(f"재고: `{stock_count or 0}개`" + (" · 품절" if out_of_stock else ""))
+            lines.append(tr('재고: `{0}개`').format(stock_count or 0) + (tr(' · 품절') if out_of_stock else ""))
         if product.get("topup_enabled"):
             if product.get("topup_kind", "tokens") == "plan":
-                delivery = f"{str(product.get('topup_plan', '')).upper()} 플랜 {int(product.get('topup_months', 0))}개월"
+                delivery = tr('{0} 플랜 {1}개월').format(str(product.get('topup_plan', '')).upper(), int(product.get('topup_months', 0)))
             else:
-                delivery = f"{int(product.get('topup_tokens', 0)):,} 토큰"
-            lines.append(f"구매 시 지급: `{delivery}` (반복 구매 가능)")
+                delivery = tr('{0:,} 토큰').format(int(product.get('topup_tokens', 0)))
+            lines.append(tr('구매 시 지급: `{0}` (반복 구매 가능)').format(delivery))
         if product.get("boost_enabled"):
-            lines.append(f"부스트 주문: `{product['boost_months']}개월 · {product['boost_quantity']}개` (반복 구매 가능)")
-            lines.append("구매 후 부스트 봇의 DM에 서버 초대링크를 보내주세요.")
+            lines.append(tr('부스트 주문: `{0}개월 · {1}개` (반복 구매 가능)').format(product['boost_months'], product['boost_quantity']))
+            lines.append(tr('구매 후 부스트 봇의 DM에 서버 초대링크를 보내주세요.'))
         original_price = int(product.get("price", 0))
         if applied and discounted_price is not None and discounted_price < original_price:
             discount_amount = original_price - discounted_price
-            value = f"{applied['discount']}%" if applied.get("discount_type", "percent") == "percent" else f"{int(applied['discount']):,}원"
+            value = f"{applied['discount']}%" if applied.get("discount_type", "percent") == "percent" else tr('{0:,}원').format(int(applied['discount']))
             lines.extend([
                 "",
-                f"적용 코드: **{applied.get('name') or applied['code']}** (`{applied['code']}` · {value})",
-                f"할인 금액: **-{discount_amount:,}원**",
-                f"적용 후 가격: **{discounted_price:,}원**",
+                tr('적용 코드: **{0}** (`{1}` · {2})').format(applied.get('name') or applied['code'], applied['code'], value),
+                tr('할인 금액: **-{0:,}원**').format(discount_amount),
+                tr('적용 후 가격: **{0:,}원**').format(discounted_price),
             ])
         elif discount_blocked:
-            lines.extend(["", "-# 이 상품은 쿠폰/프로모션을 사용할 수 없습니다."])
+            lines.extend(["", tr('-# 이 상품은 쿠폰/프로모션을 사용할 수 없습니다.')])
         if owned:
-            lines.append("이미 구매한 상품입니다. 다운로드 버튼으로 링크를 다시 받을 수 있습니다.")
+            lines.append(tr('이미 구매한 상품입니다. 다운로드 버튼으로 링크를 다시 받을 수 있습니다.'))
 
         container = discord.ui.Container(accent_color=COLOR_VENDING)
         add_brand_section(container, "\n".join(lines))
         container.add_item(discord.ui.Separator())
         buy_button = discord.ui.Button(
-            label="품절" if out_of_stock else ("구매하기" if not owned else "다운로드"),
+            label=tr('품절') if out_of_stock else (tr('구매하기') if not owned else tr('다운로드')),
             style=discord.ButtonStyle.secondary if (out_of_stock or owned) else discord.ButtonStyle.success,
             disabled=out_of_stock,
         )
         buy_button.callback = self.buy
         detail_buttons = [buy_button]
         if not discount_blocked:
-            discount_button = discord.ui.Button(label="쿠폰 / 프로모션", style=discord.ButtonStyle.primary)
+            discount_button = discord.ui.Button(label=tr('쿠폰 / 프로모션'), style=discord.ButtonStyle.primary)
             discount_button.callback = self.discount
             detail_buttons.append(discount_button)
         page_url = cog.product_page_url(int(product["guild_id"]), product)
         if page_url:
-            detail_buttons.append(discord.ui.Button(label="상품 페이지", style=discord.ButtonStyle.link, url=page_url))
+            detail_buttons.append(discord.ui.Button(label=tr('상품 페이지'), style=discord.ButtonStyle.link, url=page_url))
         container.add_item(discord.ui.ActionRow(*detail_buttons))
         self.add_item(container)
 
@@ -667,30 +742,32 @@ class ProductDetailView(discord.ui.LayoutView):
         await self.cog.handle_discount_menu(interaction, self.product_id)
 
 
+@localized_component
 class PromotionCodeModal(discord.ui.Modal, title="프로모션 코드 입력"):
-    code = discord.ui.TextInput(label="프로모션 코드", max_length=40)
-
     def __init__(self, cog: VendingArchiveCog, product_id: str):
         super().__init__()
         self.cog = cog
         self.product_id = product_id
+        self.code = discord.ui.TextInput(max_length=40)
+        self.add_item(discord.ui.Label(text=tr('프로모션 코드'), component=self.code))
 
     async def on_submit(self, interaction: discord.Interaction):
         await self.cog.handle_promotion_code(interaction, self.product_id, str(self.code))
 
 
+@localized_component
 class VendingCouponSelect(discord.ui.Select):
     def __init__(self, cog: VendingArchiveCog, product_id: str, items: list[dict]):
         self.cog = cog
         self.product_id = product_id
-        options = [discord.SelectOption(label="쿠폰 사용 안 함", value="none")]
+        options = [discord.SelectOption(label=tr('쿠폰 사용 안 함'), value="none")]
         for owned in items[:24]:
             coupon = owned["coupon"]
             options.append(discord.SelectOption(
-                label=f"{coupon['name']} ({owned['quantity']}장)", value=coupon["code"],
-                description=f"{coupon['discount']}% 할인 · {coupon['code']}"[:100],
+                label=tr('{0} ({1}장)').format(coupon['name'], owned['quantity']), value=coupon["code"],
+                description=tr('{0}% 할인 · {1}').format(coupon['discount'], coupon['code'])[:100],
             ))
-        super().__init__(placeholder="보유 쿠폰을 선택하세요", options=options)
+        super().__init__(placeholder=tr('보유 쿠폰을 선택하세요'), options=options)
 
     async def callback(self, interaction: discord.Interaction):
         await self.cog.handle_vending_coupon(
@@ -698,17 +775,18 @@ class VendingCouponSelect(discord.ui.Select):
         )
 
 
+@localized_component
 class DiscountMenuView(discord.ui.LayoutView):
     def __init__(self, cog: VendingArchiveCog, product_id: str, items: list[dict]):
         super().__init__(timeout=300)
         self.cog = cog
         self.product_id = product_id
         box = discord.ui.Container(accent_color=COLOR_VENDING)
-        box.add_item(discord.ui.TextDisplay("## 쿠폰 / 프로모션\n보유 쿠폰을 선택하거나 프로모션 코드를 입력하세요."))
+        box.add_item(discord.ui.TextDisplay(tr('## 쿠폰 / 프로모션\n보유 쿠폰을 선택하거나 프로모션 코드를 입력하세요.')))
         box.add_item(discord.ui.Separator())
         if items:
             box.add_item(discord.ui.ActionRow(VendingCouponSelect(cog, product_id, items)))
-        promotion = discord.ui.Button(label="프로모션 코드 입력", style=discord.ButtonStyle.primary)
+        promotion = discord.ui.Button(label=tr('프로모션 코드 입력'), style=discord.ButtonStyle.primary)
         promotion.callback = self.promotion
         box.add_item(discord.ui.ActionRow(promotion))
         self.add_item(box)
@@ -717,6 +795,7 @@ class DiscountMenuView(discord.ui.LayoutView):
         await interaction.response.send_modal(PromotionCodeModal(self.cog, self.product_id))
 
 
+@localized_component
 class DownloadSelect(discord.ui.Select):
     def __init__(
         self,
@@ -729,7 +808,7 @@ class DownloadSelect(discord.ui.Select):
         self.cog = cog
         options = []
         for owned in owned_products[:SELECT_OPTION_LIMIT]:
-            label = owned.get("title") or owned.get("product_id") or "상품"
+            label = owned.get("title") or owned.get("product_id") or tr('상품')
             product_id = owned.get("product_id") or owned.get("product_id_lower")
             options.append(
                 discord.SelectOption(
@@ -738,9 +817,9 @@ class DownloadSelect(discord.ui.Select):
                     description=f"ID: {product_id}"[:100],
                 )
             )
-        placeholder = "다운로드할 상품을 모두 선택하세요."
+        placeholder = tr('다운로드할 상품을 모두 선택하세요.')
         if page_count > 1:
-            placeholder = f"다운로드 상품 선택 ({page_index + 1}/{page_count})"
+            placeholder = tr('다운로드 상품 선택 ({0}/{1})').format(page_index + 1, page_count)
         super().__init__(
             placeholder=placeholder,
             min_values=1,
@@ -752,11 +831,12 @@ class DownloadSelect(discord.ui.Select):
         await self.cog.handle_download_selected(interaction, list(self.values))
 
 
+@localized_component
 class DownloadSelectView(discord.ui.LayoutView):
     def __init__(self, cog: VendingArchiveCog, owned_products: list[dict]):
         super().__init__(timeout=180)
         container = discord.ui.Container(accent_color=COLOR_VENDING)
-        add_brand_section(container, "## 다운로드\n링크를 다시 받을 상품을 하나 이상 선택하세요.")
+        add_brand_section(container, tr('## 다운로드\n링크를 다시 받을 상품을 하나 이상 선택하세요.'))
         container.add_item(discord.ui.Separator())
         owned_chunks = chunked(owned_products)
         for page_index, owned_chunk in enumerate(owned_chunks):

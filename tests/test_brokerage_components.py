@@ -19,6 +19,7 @@ from cogs.cogs_brokerage import (
     BrokerageReportModal,
     BrokerageReviewModal,
     BrokerageReviewRequestView,
+    BrokerageRulesView,
     BrokerageTicketView,
     BrokerageVerificationView,
     BrokerageVerificationCodeView,
@@ -106,6 +107,38 @@ class BrokerageComponentLayoutTests(unittest.TestCase):
             },
         )
         self.assertIn("거래중개 관리 패널", layout_text(view))
+
+    def test_rules_panel_contains_every_section_and_a_gif_gallery(self) -> None:
+        with patch(
+            "cogs.brokerage.components.gif_media_url",
+            return_value="https://cdn.example.com/rules.gif",
+        ):
+            view = BrokerageRulesView("rules.gif")
+
+        self.assert_components_v2_container(view)
+        text = layout_text(view)
+        for heading in (
+            "ROBLOX 계정거래 운영 메뉴얼",
+            "1. 기본 거래 규칙",
+            "2. 판매자 준수 사항",
+            "3. 구매자 준수 사항",
+            "4. 거래 진행 절차",
+            "5. 금지 행위",
+            "6. 사기 신고 및 분쟁 처리",
+            "7. 필수 주의 사항",
+        ):
+            with self.subTest(heading=heading):
+                self.assertIn(heading, text)
+        galleries = [
+            item
+            for item in view.walk_children()
+            if isinstance(item, discord.ui.MediaGallery)
+        ]
+        self.assertEqual(len(galleries), 1)
+        self.assertEqual(
+            str(galleries[0].items[0].media.url),
+            "https://cdn.example.com/rules.gif",
+        )
 
     def test_open_listing_keeps_listing_scoped_persistent_actions(self) -> None:
         listing = {

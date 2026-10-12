@@ -37,6 +37,7 @@ from utils.embeds import (
     info_embed,
     success_embed,
 )
+from utils.gifs import gif_media_url
 from utils.panels import save_panel_location
 from utils.roles import has_role
 from utils.tickets import safe_channel_name
@@ -68,6 +69,7 @@ from .modals import (
     BrokerageVerificationCodeModal,
     BrokerageVerificationDestinationModal,
 )
+from .rules import RULES_BLOCKS, RULES_HEADER
 
 
 class BrokerageListingView(discord.ui.LayoutView):
@@ -418,4 +420,27 @@ class BrokerageMessageView(discord.ui.LayoutView):
         super().__init__(timeout=300)
         container = discord.ui.Container(accent_color=color)
         _add_brand_section(container, content)
+        self.add_item(container)
+
+
+class BrokerageRulesView(discord.ui.LayoutView):
+    def __init__(self, gif_name: str | None):
+        super().__init__(timeout=300)
+        container = discord.ui.Container(accent_color=COLOR_INFO)
+        _add_brand_section(container, RULES_HEADER)
+        container.add_item(discord.ui.Separator())
+        for block in RULES_BLOCKS:
+            container.add_item(discord.ui.TextDisplay(block))
+
+        media_url = gif_media_url(gif_name)
+        if media_url:
+            container.add_item(discord.ui.Separator())
+            container.add_item(
+                discord.ui.MediaGallery(
+                    discord.MediaGalleryItem(
+                        media_url,
+                        description="DevilBlox ROBLOX 계정거래 운영 규칙",
+                    )
+                )
+            )
         self.add_item(container)

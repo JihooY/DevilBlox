@@ -49,6 +49,7 @@ from database.vending import (
 from services.vending import VendingCommerceService
 from services.vending_boost import call_boost, validate_boost
 from services.vending_topup import TopupPendingError
+from utils.vending_i18n import LANGUAGE, tr
 from utils.embeds import (
     BRAND_LOGO_FILENAME,
     branded_files,
@@ -274,54 +275,54 @@ class VendingArchiveCog(commands.Cog):
 
     def product_thread_mention(self, product: dict | None) -> str:
         if not product or not product.get("thread_id"):
-            return "`미설정`"
+            return tr('`미설정`')
         return f"<#{product['thread_id']}>"
 
     async def build_product_embed(self, guild_id: int, product: dict) -> discord.Embed:
-        embed = info_embed(product.get("title") or "상품 정보", product.get("description") or None)
-        embed.add_field(name="상품 ID", value=f"`{product.get('product_id')}`", inline=True)
-        embed.add_field(name="가격", value=f"{int(product.get('price', 0)):,}원", inline=True)
-        embed.add_field(name="상품 페이지", value=self.product_thread_mention(product), inline=False)
+        embed = info_embed(product.get("title") or tr('상품 정보'), product.get("description") or None)
+        embed.add_field(name=tr('상품 ID'), value=f"`{product.get('product_id')}`", inline=True)
+        embed.add_field(name=tr('가격'), value=tr('{0:,}원').format(int(product.get('price', 0))), inline=True)
+        embed.add_field(name=tr('상품 페이지'), value=self.product_thread_mention(product), inline=False)
         if product.get("product_type") == "stock":
             count = await self.repos.vending_stock.count(guild_id, product["product_id"])
-            embed.add_field(name="재고", value=f"{count}개" + (" (품절)" if count <= 0 else ""), inline=True)
+            embed.add_field(name=tr('재고'), value=tr('{0}개').format(count) + (tr(' (품절)') if count <= 0 else ""), inline=True)
         if product.get("boost_enabled"):
-            embed.add_field(name="부스트 주문", value=f"{product['boost_months']}개월 · {product['boost_quantity']}개 · DM에서 초대링크 입력", inline=False)
+            embed.add_field(name=tr('부스트 주문'), value=tr('{0}개월 · {1}개 · DM에서 초대링크 입력').format(product['boost_months'], product['boost_quantity']), inline=False)
         if product.get("topup_enabled"):
             if product.get("topup_kind", "tokens") == "plan":
-                delivery = f"{product.get('topup_plan', '').upper()} 플랜 {int(product.get('topup_months', 0))}개월"
+                delivery = tr('{0} 플랜 {1}개월').format(product.get('topup_plan', '').upper(), int(product.get('topup_months', 0)))
             else:
-                delivery = f"{int(product.get('topup_tokens', 0)):,} 토큰"
-            embed.add_field(name="API 지급", value=delivery, inline=True)
+                delivery = tr('{0:,} 토큰').format(int(product.get('topup_tokens', 0)))
+            embed.add_field(name=tr('API 지급'), value=delivery, inline=True)
         if await self.commerce.discount_blocked_for(guild_id, product):
-            embed.add_field(name="쿠폰/프로모션", value="사용 불가", inline=True)
+            embed.add_field(name=tr('쿠폰/프로모션'), value=tr('사용 불가'), inline=True)
         seller_id = product.get("seller_id")
         if seller_id:
-            embed.add_field(name="셀러", value=f"<@{seller_id}>", inline=True)
+            embed.add_field(name=tr('셀러'), value=f"<@{seller_id}>", inline=True)
         return embed
 
     def build_download_embed(self, product: dict | None, owned: dict | None = None) -> discord.Embed:
-        title = (product or owned or {}).get("title") or "상품 다운로드"
+        title = (product or owned or {}).get("title") or tr('상품 다운로드')
         product_id = (product or owned or {}).get("product_id") or "unknown"
         url = (product or {}).get("terabox_url") or (owned or {}).get("terabox_url") or ""
-        embed = success_embed("다운로드 링크", f"상품 `{product_id}`의 전달 링크입니다.")
-        embed.add_field(name=title, value=url or "저장된 링크가 없습니다.", inline=False)
+        embed = success_embed(tr('다운로드 링크'), tr('상품 `{0}`의 전달 링크입니다.').format(product_id))
+        embed.add_field(name=title, value=url or tr('저장된 링크가 없습니다.'), inline=False)
         return embed
 
     def build_downloads_embed(self, items: list[tuple[dict | None, dict]]) -> discord.Embed:
-        embed = success_embed("다운로드 링크", "선택한 상품의 전달 링크입니다.")
+        embed = success_embed(tr('다운로드 링크'), tr('선택한 상품의 전달 링크입니다.'))
         for product, owned in items[:25]:
             source = product or owned
             product_id = source.get("product_id") or "unknown"
             title = source.get("title") or product_id
-            url = (product or {}).get("terabox_url") or owned.get("terabox_url") or "저장된 링크가 없습니다."
+            url = (product or {}).get("terabox_url") or owned.get("terabox_url") or tr('저장된 링크가 없습니다.')
             embed.add_field(name=f"{title} (`{product_id}`)", value=url, inline=False)
         return embed
 
     def build_stock_unit_embed(self, product: dict, unit: dict | None) -> discord.Embed:
-        title = product.get("title") or product.get("product_id") or "상품"
-        content = (unit or {}).get("content") or "저장된 내용이 없습니다."
-        embed = success_embed(title, f"상품 `{product.get('product_id')}`의 재고 내용입니다.")
+        title = product.get("title") or product.get("product_id") or tr('상품')
+        content = (unit or {}).get("content") or tr('저장된 내용이 없습니다.')
+        embed = success_embed(title, tr('상품 `{0}`의 재고 내용입니다.').format(product.get('product_id')))
         embed.add_field(name=title, value=content, inline=False)
         return embed
 
@@ -573,21 +574,21 @@ class VendingArchiveCog(commands.Cog):
     ):
         await interaction.response.defer(ephemeral=True)
         if not interaction.guild:
-            await interaction.followup.send(embed=error_embed("처리 실패", "서버 안에서만 사용할 수 있습니다."), ephemeral=True)
+            await interaction.followup.send(embed=error_embed(tr('처리 실패'), tr('서버 안에서만 사용할 수 있습니다.')), ephemeral=True)
             return
         amount = parse_positive_amount(amount_text)
         if amount is None:
-            await interaction.followup.send(embed=error_embed("금액 오류", "1원 이상의 숫자로 입력해주세요."), ephemeral=True)
+            await interaction.followup.send(embed=error_embed(tr('금액 오류'), tr('1원 이상의 숫자로 입력해주세요.')), ephemeral=True)
             return
         if proof is None:
-            await interaction.followup.send(embed=error_embed("입금 사진 없음", "입금 확인 사진을 1장 업로드해주세요."), ephemeral=True)
+            await interaction.followup.send(embed=error_embed(tr('입금 사진 없음'), tr('입금 확인 사진을 1장 업로드해주세요.')), ephemeral=True)
             return
         if not is_image_attachment(proof):
-            await interaction.followup.send(embed=error_embed("파일 오류", "입금 사진은 이미지 파일만 업로드할 수 있습니다."), ephemeral=True)
+            await interaction.followup.send(embed=error_embed(tr('파일 오류'), tr('입금 사진은 이미지 파일만 업로드할 수 있습니다.')), ephemeral=True)
             return
         if proof.size > MAX_CHARGE_PROOF_BYTES:
             await interaction.followup.send(
-                embed=error_embed("파일 용량 오류", "입금 사진은 8MB 이하로 업로드해주세요."),
+                embed=error_embed(tr('파일 용량 오류'), tr('입금 사진은 8MB 이하로 업로드해주세요.')),
                 ephemeral=True,
             )
             return
@@ -595,8 +596,8 @@ class VendingArchiveCog(commands.Cog):
         if admin_channel is None:
             await interaction.followup.send(
                 embed=error_embed(
-                    "관리자 채널 미설정",
-                    "`/채널설정`으로 자판기 관리자 채널을 패널 채널과 다른 채널로 설정해주세요.",
+                    tr('관리자 채널 미설정'),
+                    tr('`/채널설정`으로 자판기 관리자 채널을 패널 채널과 다른 채널로 설정해주세요.'),
                 ),
                 ephemeral=True,
             )
@@ -606,7 +607,7 @@ class VendingArchiveCog(commands.Cog):
         try:
             proof_bytes = await proof.read()
         except discord.HTTPException:
-            await interaction.followup.send(embed=error_embed("파일 처리 실패", "입금 사진을 읽지 못했습니다. 다시 시도해주세요."), ephemeral=True)
+            await interaction.followup.send(embed=error_embed(tr('파일 처리 실패'), tr('입금 사진을 읽지 못했습니다. 다시 시도해주세요.')), ephemeral=True)
             return
 
         charge = await self.repos.vending.create_charge_request(
@@ -617,6 +618,7 @@ class VendingArchiveCog(commands.Cog):
             proof_filename=proof_filename,
             proof_content_type=proof.content_type or "",
             proof_size=proof.size,
+            language=LANGUAGE.get(),
         )
 
         admin_file = discord.File(io.BytesIO(proof_bytes), filename=proof_filename)
@@ -666,7 +668,7 @@ class VendingArchiveCog(commands.Cog):
         )
 
         await interaction.followup.send(
-            embed=success_embed("충전 신청 완료", "관리자가 입금을 확인하면 DM으로 결과를 알려드립니다."),
+            embed=success_embed(tr('충전 신청 완료'), tr('관리자가 입금을 확인하면 DM으로 결과를 알려드립니다.')),
             ephemeral=True,
         )
 
@@ -701,7 +703,11 @@ class VendingArchiveCog(commands.Cog):
         await self.send_user_dm(
             interaction.guild,
             charge["user_id"],
-            success_embed("충전 수락", f"{int(charge['amount']):,}원이 충전되었습니다.\n승인 관리자: {interaction.user.mention}"),
+            success_embed(
+                tr("충전 수락", charge.get("language", "ko")),
+                tr("{0:,}원이 충전되었습니다.\n승인 관리자: {1}", charge.get("language", "ko"))
+                .format(int(charge["amount"]), interaction.user.mention),
+            ),
         )
         embed = success_embed("충전 수락 완료")
         await interaction.followup.send(**random_embed_gif_kwargs(embed, SUCCESS_GIFS), ephemeral=True)
@@ -730,7 +736,11 @@ class VendingArchiveCog(commands.Cog):
         await self.send_user_dm(
             interaction.guild,
             charge["user_id"],
-            error_embed("충전 거절", f"사유: {charge.get('reject_reason') or '사유 없음'}\n거절 관리자: {interaction.user.mention}"),
+            error_embed(
+                tr("충전 거절", charge.get("language", "ko")),
+                tr("사유: {0}\n거절 관리자: {1}", charge.get("language", "ko"))
+                .format(charge.get("reject_reason") or tr("사유 없음", charge.get("language", "ko")), interaction.user.mention),
+            ),
         )
         embed = success_embed("충전 거절 완료")
         await interaction.followup.send(**random_embed_gif_kwargs(embed, DENIED_GIFS), ephemeral=True)
@@ -738,12 +748,12 @@ class VendingArchiveCog(commands.Cog):
     async def handle_category_menu(self, interaction: discord.Interaction, mode: str):
         await interaction.response.defer(ephemeral=True)
         if not interaction.guild:
-            await interaction.followup.send(embed=error_embed("처리 실패", "서버 안에서만 사용할 수 있습니다."), ephemeral=True)
+            await interaction.followup.send(embed=error_embed(tr('처리 실패'), tr('서버 안에서만 사용할 수 있습니다.')), ephemeral=True)
             return
         categories = await self.repos.product_categories.list_active(interaction.guild.id)
         if not categories:
             await interaction.followup.send(
-                embed=error_embed("카테고리 없음", "`/상품카테고리등록`으로 카테고리를 먼저 등록해주세요."),
+                embed=error_embed(tr('카테고리 없음'), tr('`/상품카테고리등록`으로 카테고리를 먼저 등록해주세요.')),
                 ephemeral=True,
             )
             return
@@ -752,16 +762,16 @@ class VendingArchiveCog(commands.Cog):
     async def handle_category_selected(self, interaction: discord.Interaction, category_id_lower: str, mode: str):
         await interaction.response.defer(ephemeral=True)
         if not interaction.guild:
-            await interaction.followup.send(embed=error_embed("처리 실패", "서버 안에서만 사용할 수 있습니다."), ephemeral=True)
+            await interaction.followup.send(embed=error_embed(tr('처리 실패'), tr('서버 안에서만 사용할 수 있습니다.')), ephemeral=True)
             return
         category = await self.repos.product_categories.get(interaction.guild.id, category_id_lower)
         if category is None:
-            await interaction.followup.send(embed=error_embed("카테고리 없음", "선택한 카테고리를 찾을 수 없습니다."), ephemeral=True)
+            await interaction.followup.send(embed=error_embed(tr('카테고리 없음'), tr('선택한 카테고리를 찾을 수 없습니다.')), ephemeral=True)
             return
         products = await self.repos.products.list_by_category(interaction.guild.id, category["category_id"])
         if not products:
             await interaction.followup.send(
-                embed=error_embed("상품 없음", "이 카테고리에 등록된 판매 상품이 없습니다."),
+                embed=error_embed(tr('상품 없음'), tr('이 카테고리에 등록된 판매 상품이 없습니다.')),
                 ephemeral=True,
             )
             return
@@ -783,11 +793,11 @@ class VendingArchiveCog(commands.Cog):
     async def handle_product_selected(self, interaction: discord.Interaction, product_id_lower: str, mode: str):
         await interaction.response.defer(ephemeral=True)
         if not interaction.guild:
-            await interaction.followup.send(embed=error_embed("처리 실패", "서버 안에서만 사용할 수 있습니다."), ephemeral=True)
+            await interaction.followup.send(embed=error_embed(tr('처리 실패'), tr('서버 안에서만 사용할 수 있습니다.')), ephemeral=True)
             return
         product = await self.repos.products.get(interaction.guild.id, product_id_lower)
         if product is None:
-            await interaction.followup.send(embed=error_embed("상품 없음", "선택한 상품을 찾을 수 없습니다."), ephemeral=True)
+            await interaction.followup.send(embed=error_embed(tr('상품 없음'), tr('선택한 상품을 찾을 수 없습니다.')), ephemeral=True)
             return
         owned = await self.repos.vending.owns_product(interaction.guild.id, interaction.user.id, product["product_id"])
         if mode == "catalog":
@@ -815,12 +825,12 @@ class VendingArchiveCog(commands.Cog):
     async def handle_purchase(self, interaction: discord.Interaction, product_id: str):
         await interaction.response.defer(ephemeral=True)
         if not interaction.guild:
-            await interaction.followup.send(embed=error_embed("처리 실패", "서버 안에서만 사용할 수 있습니다."), ephemeral=True)
+            await interaction.followup.send(embed=error_embed(tr('처리 실패'), tr('서버 안에서만 사용할 수 있습니다.')), ephemeral=True)
             return
         product_id = product_id.strip()
         product = await self.repos.products.get(interaction.guild.id, product_id)
         if product is None:
-            await interaction.followup.send(embed=error_embed("상품 없음", "해당 상품 ID를 찾을 수 없습니다."), ephemeral=True)
+            await interaction.followup.send(embed=error_embed(tr('상품 없음'), tr('해당 상품 ID를 찾을 수 없습니다.')), ephemeral=True)
             return
 
         try:
@@ -831,7 +841,7 @@ class VendingArchiveCog(commands.Cog):
             )
         except TopupPendingError:
             await interaction.followup.send(
-                embed=error_embed("지급 확인 대기", "결제한 주문의 지급 완료를 확인하지 못했습니다. 같은 상품의 구매 버튼을 다시 누르면 기존 주문번호로 재시도합니다. 추가 결제되지 않습니다."),
+                embed=error_embed(tr('지급 확인 대기'), tr('결제한 주문의 지급 완료를 확인하지 못했습니다. 같은 상품의 구매 버튼을 다시 누르면 기존 주문번호로 재시도합니다. 추가 결제되지 않습니다.')),
                 ephemeral=True,
             )
             return
@@ -842,15 +852,15 @@ class VendingArchiveCog(commands.Cog):
         if result.status == "insufficient_funds":
             await interaction.followup.send(
                 embed=error_embed(
-                    "잔액 부족",
-                    f"현재 잔액은 {result.current_cash:,}원이고, 상품 가격은 {result.price:,}원입니다.",
+                    tr('잔액 부족'),
+                    tr('현재 잔액은 {0:,}원이고, 상품 가격은 {1:,}원입니다.').format(result.current_cash, result.price),
                 ),
                 ephemeral=True,
             )
             return
         if result.status == "out_of_stock":
             await interaction.followup.send(
-                embed=error_embed("품절", "현재 재고가 없습니다. 입고 후 다시 시도해주세요."),
+                embed=error_embed(tr('품절'), tr('현재 재고가 없습니다. 입고 후 다시 시도해주세요.')),
                 ephemeral=True,
             )
             return
@@ -899,7 +909,7 @@ class VendingArchiveCog(commands.Cog):
                 buyer_id=interaction.user.id,
                 seller_id=product.get("seller_id"),
                 product_id=product.get("product_id", ""),
-                product_title=product.get("title") or product.get("product_id") or "상품",
+                product_title=product.get("title") or product.get("product_id") or tr('상품'),
                 category_id=product.get("category_id", ""),
                 category_name=(category or {}).get("name", ""),
                 source="vending",
@@ -908,17 +918,17 @@ class VendingArchiveCog(commands.Cog):
             )
         if product.get("boost_enabled"):
             await interaction.followup.send(
-                embed=success_embed("부스트 주문 접수", f"{product['boost_months']}개월 부스트 {product['boost_quantity']}개 주문을 접수했습니다.\n부스트 봇의 DM에 서버 초대링크를 보내주세요. DM 수신을 허용해주세요.\n재고가 부족하면 재입고 후 DM에 링크를 다시 보내주세요.\n주문번호: `{result.operation_id}`\n`/부스트주문조회`로 처리 상태를 확인할 수 있습니다."),
+                embed=success_embed(tr('부스트 주문 접수'), tr('{0}개월 부스트 {1}개 주문을 접수했습니다.\n부스트 봇의 DM에 서버 초대링크를 보내주세요. DM 수신을 허용해주세요.\n재고가 부족하면 재입고 후 DM에 링크를 다시 보내주세요.\n주문번호: `{2}`\n`/부스트주문조회`로 처리 상태를 확인할 수 있습니다.').format(product['boost_months'], product['boost_quantity'], result.operation_id)),
                 ephemeral=True,
             )
             return
         if product.get("topup_enabled"):
             if product.get("topup_kind", "tokens") == "plan":
-                delivery = f"{product['topup_plan'].upper()} 플랜 {int(product['topup_months'])}개월"
+                delivery = tr('{0} 플랜 {1}개월').format(product['topup_plan'].upper(), int(product['topup_months']))
             else:
-                delivery = f"{int(product['topup_tokens']):,} 토큰"
+                delivery = tr('{0:,} 토큰').format(int(product['topup_tokens']))
             await interaction.followup.send(
-                embed=success_embed("API 지급 완료", f"{delivery} 지급을 완료했습니다.\n주문번호: `{result.operation_id}`"),
+                embed=success_embed(tr('API 지급 완료'), tr('{0} 지급을 완료했습니다.\n주문번호: `{1}`').format(delivery, result.operation_id)),
                 ephemeral=True,
             )
             return
@@ -942,14 +952,14 @@ class VendingArchiveCog(commands.Cog):
         atomic step that prevents two buyers sharing one unit), so a DM
         failure must not lose the content -- the caller still needs it.
         """
-        title = product.get("title") or product.get("product_id") or "상품"
+        title = product.get("title") or product.get("product_id") or tr('상품')
         try:
             await interaction.user.send(embed=self.build_stock_unit_embed(product, unit))
         except discord.HTTPException:
             embed = self.build_stock_unit_embed(product, unit)
-            embed.description = f"DM을 보낼 수 없어 아래에 바로 표시합니다. (DM 허용 설정을 확인해주세요)\n{embed.description or ''}"
+            embed.description = tr('DM을 보낼 수 없어 아래에 바로 표시합니다. (DM 허용 설정을 확인해주세요)\n{0}').format(embed.description or '')
             return embed
-        return success_embed("구매 완료", f"**{title}** 재고를 DM으로 전송했습니다.")
+        return success_embed(tr('구매 완료'), tr('**{0}** 재고를 DM으로 전송했습니다.').format(title))
 
     async def stock_products(self, guild_id: int) -> list[dict]:
         products = await self.repos.products.list_active(guild_id, limit=None)
@@ -1062,11 +1072,11 @@ class VendingArchiveCog(commands.Cog):
     async def handle_discount_menu(self, interaction: discord.Interaction, product_id: str):
         coupon_cog = self.bot.get_cog("CouponCog")
         if coupon_cog is None:
-            await interaction.response.send_message(embed=error_embed("쿠폰 오류", "쿠폰 시스템이 로드되지 않았습니다."), ephemeral=True); return
+            await interaction.response.send_message(embed=error_embed(tr('쿠폰 오류'), tr('쿠폰 시스템이 로드되지 않았습니다.')), ephemeral=True); return
         await interaction.response.defer(ephemeral=True)
         product = await self.repos.products.get(interaction.guild.id, product_id)
         if product is not None and await self.commerce.discount_blocked_for(interaction.guild.id, product):
-            await interaction.followup.send(embed=error_embed("사용 불가", "이 상품은 쿠폰/프로모션을 사용할 수 없습니다."), ephemeral=True)
+            await interaction.followup.send(embed=error_embed(tr('사용 불가'), tr('이 상품은 쿠폰/프로모션을 사용할 수 없습니다.')), ephemeral=True)
             return
         items = await self.repos.coupons.list_for_user(interaction.guild.id, interaction.user.id, "general")
         try:
@@ -1102,7 +1112,7 @@ class VendingArchiveCog(commands.Cog):
         await interaction.response.defer(ephemeral=True)
         product = await self.repos.products.get(interaction.guild.id, product_id)
         if product is not None and await self.commerce.discount_blocked_for(interaction.guild.id, product):
-            await interaction.followup.send(embed=error_embed("사용 불가", "이 상품은 쿠폰/프로모션을 사용할 수 없습니다."), ephemeral=True)
+            await interaction.followup.send(embed=error_embed(tr('사용 불가'), tr('이 상품은 쿠폰/프로모션을 사용할 수 없습니다.')), ephemeral=True)
             return
         await self.repos.coupons.select(
             interaction.guild.id, interaction.user.id, f"vending:{normalize_product_id(product_id)}", code
@@ -1117,11 +1127,11 @@ class VendingArchiveCog(commands.Cog):
         await interaction.response.defer(ephemeral=True)
         product = await self.repos.products.get(interaction.guild.id, product_id)
         if product is not None and await self.commerce.discount_blocked_for(interaction.guild.id, product):
-            await interaction.followup.send(embed=error_embed("사용 불가", "이 상품은 쿠폰/프로모션을 사용할 수 없습니다."), ephemeral=True)
+            await interaction.followup.send(embed=error_embed(tr('사용 불가'), tr('이 상품은 쿠폰/프로모션을 사용할 수 없습니다.')), ephemeral=True)
             return
         promo = await self.repos.coupons.validate_promotion(interaction.guild.id, interaction.user.id, code)
         if promo is None:
-            await interaction.followup.send(embed=error_embed("사용 불가", "해당 프로모션 전용 초대 링크로 가입한 계정만 사용할 수 있습니다."), ephemeral=True); return
+            await interaction.followup.send(embed=error_embed(tr('사용 불가'), tr('해당 프로모션 전용 초대 링크로 가입한 계정만 사용할 수 있습니다.')), ephemeral=True); return
         await self.repos.coupons.select_promotion(interaction.guild.id, interaction.user.id,
                                                   f"vending:{normalize_product_id(product_id)}", code)
         try:
@@ -1133,11 +1143,11 @@ class VendingArchiveCog(commands.Cog):
     async def handle_download_menu(self, interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True)
         if not interaction.guild:
-            await interaction.followup.send(embed=error_embed("처리 실패", "서버 안에서만 사용할 수 있습니다."), ephemeral=True)
+            await interaction.followup.send(embed=error_embed(tr('처리 실패'), tr('서버 안에서만 사용할 수 있습니다.')), ephemeral=True)
             return
         owned = await self.repos.vending.list_owned_products(interaction.guild.id, interaction.user.id)
         if not owned:
-            await interaction.followup.send(embed=error_embed("구매 내역 없음", "아직 구매한 상품이 없습니다."), ephemeral=True)
+            await interaction.followup.send(embed=error_embed(tr('구매 내역 없음'), tr('아직 구매한 상품이 없습니다.')), ephemeral=True)
             return
         await interaction.followup.send(
             view=DownloadSelectView(self, owned),
@@ -1148,7 +1158,7 @@ class VendingArchiveCog(commands.Cog):
     async def handle_download_selected(self, interaction: discord.Interaction, product_ids_lower: list[str]):
         await interaction.response.defer(ephemeral=True)
         if not interaction.guild:
-            await interaction.followup.send(embed=error_embed("처리 실패", "서버 안에서만 사용할 수 있습니다."), ephemeral=True)
+            await interaction.followup.send(embed=error_embed(tr('처리 실패'), tr('서버 안에서만 사용할 수 있습니다.')), ephemeral=True)
             return
         owned_products = await self.repos.vending.user_products.find(
             {
@@ -1170,7 +1180,7 @@ class VendingArchiveCog(commands.Cog):
             items.append((product, owned))
 
         if not items:
-            await interaction.followup.send(embed=error_embed("권한 없음", "구매한 상품만 다운로드할 수 있습니다."), ephemeral=True)
+            await interaction.followup.send(embed=error_embed(tr('권한 없음'), tr('구매한 상품만 다운로드할 수 있습니다.')), ephemeral=True)
             return
         await interaction.followup.send(embed=self.build_downloads_embed(items), ephemeral=True)
 

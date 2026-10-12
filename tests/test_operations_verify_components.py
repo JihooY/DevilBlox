@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import base64
 from datetime import datetime, timezone
 from types import SimpleNamespace
 import unittest
@@ -217,42 +216,6 @@ class OperationsComponentsTests(unittest.IsolatedAsyncioTestCase):
 
 
 class VerifyComponentsTests(unittest.IsolatedAsyncioTestCase):
-    async def test_easter_eggs_preserve_phrase_and_allow_verification(self):
-        clay = verify_module.easter_egg_message("clay")
-        raw = bytes.fromhex("".join(
-            format(ord(char) - 0x12000, "x") for char in clay if char != " "
-        ))
-        self.assertEqual(raw.decode("utf-32-be"), "깨비 바보")
-        dna = verify_module.easter_egg_message("dna")
-        self.assertEqual(bytes(int("".join(str("ACGT".index(c)) for c in group), 4)
-                               for group in dna.split()).decode("utf-32-be"), "깨비 바보")
-        dolphin = verify_module.easter_egg_message("dolphin")
-        self.assertEqual(base64.b64decode(dolphin).decode("utf-32-be"), clay + "\n" + dna)
-
-        view = verify_module.VerifyLanguageView(SimpleNamespace(), 2)
-        interaction = SimpleNamespace(
-            user=SimpleNamespace(id=2),
-            response=SimpleNamespace(edit_message=AsyncMock()),
-        )
-        for language in verify_module.EASTER_LANGUAGES:
-            await view.show_easter_egg(interaction, language)
-            self.assertIn(verify_module.easter_egg_message(language), view.easter_display.content)
-            self.assertLess(len(view.easter_display.content), 2000)
-        self.assertFalse(view.started)
-        self.assertFalse(view.is_finished())
-        self.assertEqual(len([item for item in view.walk_children()
-                              if isinstance(item, discord.ui.Button)]), 4)
-
-    async def test_easter_egg_rejects_other_user(self):
-        view = verify_module.VerifyLanguageView(SimpleNamespace(), 2)
-        interaction = SimpleNamespace(
-            user=SimpleNamespace(id=3),
-            response=SimpleNamespace(send_message=AsyncMock(), edit_message=AsyncMock()),
-        )
-        await view.show_easter_egg(interaction, "clay")
-        interaction.response.edit_message.assert_not_awaited()
-        interaction.response.send_message.assert_awaited_once_with(verify_module.TEXT["ko"][7], ephemeral=True)
-
     async def test_panel_command_defers_before_upload_and_save(self):
         events = []
 

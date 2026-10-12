@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import base64
 import secrets
 import time
 
@@ -33,7 +32,7 @@ VERIFY_TIMEOUT = 120
 MAX_ATTEMPTS = 3
 
 
-LANGUAGES = {"ko": "한국어", "en": "English", "ja": "日本語", "zh": "中文"}
+LANGUAGES = {"ko": "한국어", "ja": "日本語", "en": "English", "zh": "中文"}
 TEXT = {
     "ko": ["화면의 보안 코드를 아래 버튼으로 입력하세요.", "보안 코드", "입력 상태", "상태", "남은 시간", "초", "남은 시도", "본인 인증 세션만 조작할 수 있습니다.", "인증 시도 횟수를 초과했습니다. 새 인증 세션을 시작해주세요.", "입력한 코드가 일치하지 않습니다. 다시 입력해주세요.", "`/역할설정`으로 인증 역할을 먼저 설정해주세요.", "봇 역할이 인증 역할보다 낮거나 역할 관리 권한이 없습니다.", "인증이 완료되어 {role} 역할이 지급되었습니다.", "인증 시간이 만료되었습니다. 다시 시작해주세요.", "서버 안에서만 사용할 수 있습니다.", "이미 인증이 완료되어 있습니다.", "삭제", "확인", "입력 대기", "잠김", "잘못된 코드", "설정 오류", "권한 오류", "인증 완료", "시간 만료"],
     "en": ["Enter the security code using the buttons below.", "Security code", "Your input", "Status", "Time left", "s", "Attempts left", "You can only use your own verification session.", "Too many attempts. Please start a new verification session.", "Incorrect code. Please try again.", "Please configure the verification role with `/역할설정` first.", "The bot needs Manage Roles permission and a role above the verification role.", "Verification complete. You received the {role} role.", "Verification timed out. Please start again.", "This is only available in a server.", "You are already verified.", "DELETE", "CONFIRM", "WAITING INPUT", "LOCKED", "INVALID CODE", "CONFIGURATION ERROR", "PERMISSION ERROR", "VERIFIED", "EXPIRED"],
@@ -41,32 +40,6 @@ TEXT = {
     "zh": ["请使用下方按钮输入屏幕上的验证码。", "验证码", "输入内容", "状态", "剩余时间", "秒", "剩余尝试次数", "您只能操作自己的验证会话。", "尝试次数已用尽。请重新开始验证。", "验证码不匹配，请重新输入。", "请先使用 `/역할설정` 配置验证身份组。", "机器人缺少管理身份组权限，或其身份组低于验证身份组。", "验证完成，已获得 {role} 身份组。", "验证已超时，请重新开始。", "只能在服务器内使用。", "您已完成验证。", "删除", "确认", "等待输入", "已锁定", "验证码错误", "配置错误", "权限错误", "验证完成", "已超时"],
 }
 STATUS_KEYS = ["WAITING INPUT", "LOCKED", "INVALID CODE", "CONFIGURATION ERROR", "PERMISSION ERROR", "VERIFIED", "EXPIRED"]
-
-
-EASTER_LANGUAGES = {
-    "clay": "점토판에 구운 뒤 유니코드 UTF-32로 복원한 수메르어",
-    "dna": "DNA 염기서열 ACGT 4진법으로 인코딩한 산스크리트어",
-    "dolphin": "돌고래 클릭음을 유니코드로 직렬화한 뒤 Base64로 인코딩한 고대 이집트어",
-}
-
-
-def easter_egg_message(language: str) -> str:
-    # Fictional language ciphers, not translations into historical languages.
-    raw = "깨비 바보".encode("utf-32-be")
-    if language == "clay":
-        alphabet = "𒀀𒀁𒀂𒀃𒀄𒀅𒀆𒀇𒀈𒀉𒀊𒀋𒀌𒀍𒀎𒀏"
-        payload = " ".join("".join(alphabet[int(n, 16)] for n in raw[i:i + 4].hex())
-                           for i in range(0, len(raw), 4))
-    elif language == "dna":
-        payload = " ".join("".join("ACGT"[(byte >> shift) & 3]
-                                  for shift in (6, 4, 2, 0)) for byte in raw)
-    elif language == "dolphin":
-        clay = easter_egg_message("clay")
-        dna = easter_egg_message("dna")
-        payload = base64.b64encode((clay + "\n" + dna).encode("utf-32-be")).decode("ascii")
-    else:
-        raise ValueError("Unsupported Easter egg language")
-    return payload
 
 
 class NumberButton(discord.ui.Button):
@@ -389,34 +362,7 @@ class VerifyLanguageView(discord.ui.LayoutView):
             button.callback = select
             row.add_item(button)
         container.add_item(row)
-        secret = discord.ui.Select(
-            placeholder="그 밖의 언어… / Other languages…",
-            options=[discord.SelectOption(label=label, value=key)
-                     for key, label in EASTER_LANGUAGES.items()],
-        )
-
-        async def select_secret(interaction):
-            await self.show_easter_egg(interaction, secret.values[0])
-
-        secret.callback = select_secret
-        container.add_item(discord.ui.ActionRow(secret))
-        self.easter_display = discord.ui.TextDisplay("-# 다른 차원의 언어도 감지되었습니다.")
-        container.add_item(self.easter_display)
         self.add_item(container)
-
-    async def show_easter_egg(self, interaction: discord.Interaction, language: str):
-        if interaction.user.id != self.user_id:
-            await interaction.response.send_message(TEXT["ko"][7], ephemeral=True)
-            return
-        if self.started or self.is_finished():
-            await interaction.response.send_message(TEXT["ko"][13], ephemeral=True)
-            return
-        payload = easter_egg_message(language)
-        self.easter_display.content = (
-            f"### {EASTER_LANGUAGES[language]}\n```\n{payload}\n```\n"
-            "-# 이스터에그용 가상 암호입니다. 인증은 위의 네 언어 중 하나를 선택하세요."
-        )
-        await interaction.response.edit_message(view=self)
 
     async def select_language(self, interaction: discord.Interaction, language: str):
         t = TEXT[language]
