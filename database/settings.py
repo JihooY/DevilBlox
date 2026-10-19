@@ -51,6 +51,7 @@ CHANNEL_KEYS = {
     "vending_restock": "자판기 입고 알림",
     "archive": "아카이브 패널",
     "operations": "서버 관리 패널",
+    "themes": "테마 관리 패널",
     "event_announce": "이벤트 공지",
 }
 
@@ -138,6 +139,8 @@ def default_settings(guild_id: int) -> dict:
             "vending_stock_panel_message_id": None,
             "archive_panel_message_id": None,
             "operations_panel_message_id": None,
+            "theme_panel_message_id": None,
+            "theme_panel_selected": None,
             "support_panel_message_id": None,
             "verify_panel_message_id": None,
             "active_panels": [],

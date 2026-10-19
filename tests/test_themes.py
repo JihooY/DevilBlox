@@ -10,6 +10,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
 
 import discord
+from discord.webhook.async_ import handle_message_parameters
 from PIL import Image
 
 from cogs.cogs_verify import VerificationCog
@@ -78,7 +79,7 @@ class ThemeTests(unittest.IsolatedAsyncioTestCase):
         self.db = {"gif_themes": Collection(), "gif_theme_media": Collection()}
         self.store = ThemeStore(self.db)
         self.service = ThemeService(self.store)
-        self.bot = SimpleNamespace(themes=self.service)
+        self.bot = SimpleNamespace(themes=self.service, get_cog=lambda _: None)
         self.cache = tempfile.TemporaryDirectory()
         self.asset_patch = patch("utils.assets.ASSETS_DIR", Path(self.cache.name))
         self.asset_patch.start()
@@ -236,6 +237,13 @@ class ThemeTests(unittest.IsolatedAsyncioTestCase):
         event = interaction()
         await modal.on_submit(event)
         updated = event.edit_original_response.await_args.kwargs["view"]
+        self.assertIsNone(event.edit_original_response.await_args.kwargs["content"])
+        self.assertIn("GIF를 추가했습니다.", "\n".join(
+            item.content for item in updated.walk_children() if isinstance(item, discord.ui.TextDisplay)
+        ))
+        with handle_message_parameters(**event.edit_original_response.await_args.kwargs) as params:
+            self.assertIsNone(params.payload["content"])
+            self.assertTrue(discord.MessageFlags._from_value(params.payload["flags"]).components_v2)
         self.assertTrue(updated.to_components())
         self.assertEqual(len((await self.service.state(11))["themes"][theme_id]["gifs"]), 1)
         self.assertTrue(modal.to_components())
@@ -246,6 +254,48 @@ class ThemeTests(unittest.IsolatedAsyncioTestCase):
         selector = next(c for c in next_page.walk_children() if isinstance(c, discord.ui.Select))
         self.assertEqual(len(selector.options), len(ALL_GIFS) - 25)
         self.assertTrue(next_page.to_components())
+
+    async def test_create_modal_puts_success_notice_in_container_instead_of_content(self):
+        manager = ThemeManagerView(self.bot, 11, 99, await self.service.state(11))
+        modal = ThemeModal(manager, upload=False)
+        modal.name._value = "스텔"
+        event = interaction()
+        await modal.on_submit(event)
+        kwargs = event.edit_original_response.await_args.kwargs
+        with handle_message_parameters(**kwargs) as params:
+            self.assertIsNone(params.payload["content"])
+            self.assertTrue(discord.MessageFlags._from_value(params.payload["flags"]).components_v2)
+        text = "\n".join(item.content for item in kwargs["view"].walk_children()
+                         if isinstance(item, discord.ui.TextDisplay))
+        self.assertIn("테마를 만들었습니다.", text)
+        self.assertIn("스텔", text)
+
+    async def test_public_panel_and_picker_are_persistent_and_modal_is_bound_to_clicking_admin(self):
+        manager = ThemeManagerView(self.bot, 11, None, await self.service.state(11))
+        self.assertTrue(manager.is_persistent())
+        ids = [c.custom_id for c in manager.walk_children() if c.is_dispatchable()]
+        self.assertEqual(len(ids), len(set(ids)))
+        event = interaction(owner=100)
+        self.assertTrue(await manager.interaction_check(event))
+        self.assertFalse(await manager.interaction_check(interaction(admin=False)))
+        await manager.create(event)
+        modal = event.response.send_modal.await_args.args[0]
+        self.assertTrue(await modal.interaction_check(interaction(owner=100)))
+        self.assertFalse(await modal.interaction_check(interaction(owner=99)))
+        self.assertTrue(GifPickerView(manager, await self.service.state(11), {}, "remove").is_persistent())
+
+    async def test_public_modal_returns_private_result_and_refreshes_saved_panel(self):
+        cog = SimpleNamespace(refresh_panel=AsyncMock())
+        self.bot.get_cog = lambda _: cog
+        manager = ThemeManagerView(self.bot, 11, None, await self.service.state(11))
+        modal = ThemeModal(manager, upload=False, owner_id=100)
+        modal.name._value = "스텔"
+        event = interaction(owner=100)
+        await modal.on_submit(event)
+        result = event.edit_original_response.await_args.kwargs["view"]
+        self.assertEqual(result.owner_id, 100)
+        self.assertEqual(result.timeout, 900)
+        cog.refresh_panel.assert_awaited_once_with(11, selected=result.selected)
 
 
 if __name__ == "__main__":

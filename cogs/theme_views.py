@@ -8,13 +8,25 @@ from services.themes import MAX_GIF_BYTES
 from utils.gifs import ALL_GIFS, choose_gif, gif_file, gif_media_url
 
 
-async def check_admin(interaction: discord.Interaction, guild_id: int, owner_id: int) -> bool:
+async def check_admin(interaction: discord.Interaction, guild_id: int, owner_id: int | None) -> bool:
     permissions = getattr(interaction.user, "guild_permissions", None)
-    if (interaction.guild_id == guild_id and interaction.user.id == owner_id
+    if (interaction.guild_id == guild_id and (owner_id is None or interaction.user.id == owner_id)
             and permissions is not None and permissions.administrator):
         return True
-    await interaction.response.send_message("이 화면을 연 서버 관리자만 사용할 수 있습니다.", ephemeral=True)
+    message = "서버 관리자만 사용할 수 있습니다." if owner_id is None else "이 화면을 연 서버 관리자만 사용할 수 있습니다."
+    await interaction.response.send_message(message, ephemeral=True)
     return False
+
+
+async def refresh_public_theme_panel(bot, guild_id: int, selected: str | None = None) -> None:
+    cog = bot.get_cog("ThemesCog")
+    if cog is not None:
+        try:
+            await cog.refresh_panel(guild_id, selected=selected)
+        except Exception:
+            # The mutation and private response have already succeeded. A
+            # refresh failure must not tell the administrator to repeat it.
+            logging.getLogger(__name__).exception("Failed to synchronize theme panel: guild_id=%s", guild_id)
 
 
 class ThemeErrors:
@@ -30,9 +42,10 @@ class ThemeErrors:
 
 
 class ThemeModal(ThemeErrors, discord.ui.Modal):
-    def __init__(self, manager: "ThemeManagerView", *, upload: bool):
+    def __init__(self, manager: "ThemeManagerView", *, upload: bool, owner_id: int | None = None):
         super().__init__(title="테마 GIF 업로드" if upload else "새 테마 만들기")
         self.manager = manager
+        self.owner_id = owner_id if owner_id is not None else manager.owner_id
         self.upload = upload
         if upload:
             self.files = discord.ui.FileUpload(min_values=1, max_values=5)
@@ -45,7 +58,7 @@ class ThemeModal(ThemeErrors, discord.ui.Modal):
             self.add_item(self.name)
 
     async def interaction_check(self, interaction):
-        return await self.manager.interaction_check(interaction)
+        return await check_admin(interaction, self.manager.guild_id, self.owner_id)
 
     async def on_submit(self, interaction):
         await interaction.response.defer(ephemeral=True, thinking=True)
@@ -60,14 +73,20 @@ class ThemeModal(ThemeErrors, discord.ui.Modal):
         else:
             state, selected = await manager.service.create(manager.guild_id, str(self.name))
         await interaction.edit_original_response(
-            content="GIF를 추가했습니다." if self.upload else "테마를 만들었습니다. GIF를 추가한 뒤 적용해주세요.",
-            view=ThemeManagerView(manager.bot, manager.guild_id, manager.owner_id, state, selected),
+            content=None,
+            view=ThemeManagerView(
+                manager.bot, manager.guild_id, interaction.user.id, state, selected,
+                notice="GIF를 추가했습니다." if self.upload else "테마를 만들었습니다. GIF를 추가한 뒤 적용해주세요.",
+            ),
         )
+        await refresh_public_theme_panel(manager.bot, manager.guild_id,
+                                         selected if manager.owner_id is None else None)
 
 
 class ThemeManagerView(ThemeErrors, discord.ui.LayoutView):
-    def __init__(self, bot, guild_id: int, owner_id: int, state: dict, selected: str | None = None):
-        super().__init__(timeout=900)
+    def __init__(self, bot, guild_id: int, owner_id: int | None, state: dict,
+                 selected: str | None = None, *, notice: str | None = None):
+        super().__init__(timeout=None if owner_id is None else 900)
         self.bot = bot
         self.service = bot.themes
         self.guild_id = guild_id
@@ -88,8 +107,12 @@ class ThemeManagerView(ThemeErrors, discord.ui.LayoutView):
                                  description=f"GIF {len(t['gifs'])}개" + (" · 사용 중" if key == state["active"] else ""))
             for key, t in state["themes"].items()
         ])
+        if notice:
+            container.add_item(discord.ui.TextDisplay(notice))
+        selector.custom_id = f"devilblox:themes:{guild_id}:select"
 
         async def select(interaction):
+            await interaction.response.defer()
             state = await self.service.state(self.guild_id)
             await self.update(interaction, state, selector.values[0])
 
@@ -111,9 +134,11 @@ class ThemeManagerView(ThemeErrors, discord.ui.LayoutView):
         container.add_item(row)
         self.add_item(container)
 
-    @staticmethod
-    def button(row, label, callback, *, style=discord.ButtonStyle.secondary, disabled=False):
-        button = discord.ui.Button(label=label, style=style, disabled=disabled)
+    def button(self, row, label, callback, *, style=discord.ButtonStyle.secondary, disabled=False):
+        button = discord.ui.Button(
+            label=label, style=style, disabled=disabled,
+            custom_id=f"devilblox:themes:{self.guild_id}:{callback.__name__}",
+        )
         button.callback = callback
         row.add_item(button)
 
@@ -122,16 +147,20 @@ class ThemeManagerView(ThemeErrors, discord.ui.LayoutView):
 
     async def update(self, interaction, state, selected=None):
         view = ThemeManagerView(self.bot, self.guild_id, self.owner_id, state, selected or self.selected)
+        if self.owner_id is None:
+            await self.bot.repos.settings.set_value(self.guild_id, "meta", "theme_panel_selected", view.selected)
         if interaction.response.is_done():
             await interaction.edit_original_response(content=None, view=view)
         else:
             await interaction.response.edit_message(content=None, view=view)
+        if self.owner_id is not None:
+            await refresh_public_theme_panel(self.bot, self.guild_id)
 
     async def create(self, interaction):
-        await interaction.response.send_modal(ThemeModal(self, upload=False))
+        await interaction.response.send_modal(ThemeModal(self, upload=False, owner_id=interaction.user.id))
 
     async def upload(self, interaction):
-        await interaction.response.send_modal(ThemeModal(self, upload=True))
+        await interaction.response.send_modal(ThemeModal(self, upload=True, owner_id=interaction.user.id))
 
     async def activate(self, interaction):
         await interaction.response.defer()
@@ -177,7 +206,7 @@ class ThemeManagerView(ThemeErrors, discord.ui.LayoutView):
 
 class GifPickerView(ThemeErrors, discord.ui.LayoutView):
     def __init__(self, manager, state, labels, mode, page=0):
-        super().__init__(timeout=900)
+        super().__init__(timeout=None if manager.owner_id is None else 900)
         self.manager = manager
         self.state = state
         self.labels = labels
@@ -197,6 +226,7 @@ class GifPickerView(ThemeErrors, discord.ui.LayoutView):
             selector = discord.ui.Select(placeholder="GIF 선택", min_values=1, max_values=len(page_items), options=[
                 discord.SelectOption(label=labels.get(name, name)[:100], value=name) for name in page_items
             ])
+            selector.custom_id = f"devilblox:themes:{manager.guild_id}:picker-{mode}-{page}"
 
             async def select(interaction):
                 await interaction.response.defer()
