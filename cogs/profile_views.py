@@ -102,7 +102,7 @@ class ProfileView(discord.ui.LayoutView):
         self.language = default_language(self.user)
         self.welcome = False
         self._render()
-        await interaction.edit_original_response(content=None, embeds=[], view=self)
+        await interaction.edit_original_response(**{"content": None, "embeds": [], "view": self})
 
     async def set_language(self, interaction, language):
         if not await self.interaction_check(interaction):
@@ -149,7 +149,7 @@ class ProfileView(discord.ui.LayoutView):
 async def build_profile_view(repos, guild, member, *, welcome=False):
     user = await repos.users.ensure_user(guild.id, member.id)
     settings = await repos.settings.get(guild.id)
-    return ProfileView(repos, member, user, settings, gif_name=choose_gif(PANEL_GIFS), welcome=welcome)
+    return ProfileView(repos, member, user, settings, gif_name=choose_gif(PANEL_GIFS, guild_id=guild.id), welcome=welcome)
 
 
 def profile_send_kwargs(view):

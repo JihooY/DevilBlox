@@ -15,6 +15,35 @@ from utils.embeds import BRAND_LOGO_FILENAME, brand_embed, branded_files
 GifPool = str | Sequence[str]
 GIF_ASSET_FOLDER = "gifs"
 OPTIMIZED_GIF_ASSET_FOLDER = "gifs_optimized"
+UPLOADED_GIF_ASSET_FOLDER = "gifs_uploaded"
+_active_themes: dict[int, tuple[str, ...]] = {}
+
+
+def set_active_gif_theme(guild_id: int, filenames: tuple[str, ...] | None) -> None:
+    if filenames is None:
+        _active_themes.pop(guild_id, None)
+    else:
+        _active_themes[guild_id] = filenames
+
+
+def active_gif_theme(guild_id: int | None) -> tuple[str, ...] | None:
+    return _active_themes.get(guild_id)
+
+
+def is_uploaded_gif(filename: str | None) -> bool:
+    return bool(filename and filename.startswith("theme_") and filename.endswith(".gif"))
+
+
+def gif_uses_local_file(filename: str | None) -> bool:
+    return bool(filename) and not _suppressed and (
+        gif_delivery_status().effective_mode == "local" or is_uploaded_gif(filename)
+    )
+
+
+def clear_gif_asset_caches() -> None:
+    has_gif_asset.cache_clear()
+    gif_asset_path.cache_clear()
+    _available_gifs_cached.cache_clear()
 
 
 @dataclass(frozen=True, slots=True)
@@ -308,7 +337,7 @@ def gif_media_url(filename: str | None) -> str | None:
     if not filename or _suppressed:
         return None
     status = gif_delivery_status()
-    if status.effective_mode == "cdn":
+    if status.effective_mode == "cdn" and not is_uploaded_gif(filename):
         if not _cdn_base_url:
             return None
         return f"{_cdn_base_url}/{quote(filename)}"
@@ -329,11 +358,15 @@ def is_gif_media_url(url: str | None) -> bool:
 
 @lru_cache(maxsize=128)
 def has_gif_asset(filename: str) -> bool:
+    if is_uploaded_gif(filename):
+        return has_asset(UPLOADED_GIF_ASSET_FOLDER, filename)
     return has_asset(GIF_ASSET_FOLDER, filename) or has_asset(OPTIMIZED_GIF_ASSET_FOLDER, filename)
 
 
 @lru_cache(maxsize=128)
 def gif_asset_path(filename: str):
+    if is_uploaded_gif(filename):
+        return asset_path(UPLOADED_GIF_ASSET_FOLDER, filename)
     folders = (
         (OPTIMIZED_GIF_ASSET_FOLDER, GIF_ASSET_FOLDER)
         if _local_variant == "optimized"
@@ -350,12 +383,14 @@ def _available_gifs_cached(candidates: tuple[str, ...]) -> tuple[str, ...]:
     return tuple(name for name in candidates if has_gif_asset(name))
 
 
-def available_gifs(candidates: GifPool | None) -> tuple[str, ...]:
+def available_gifs(candidates: GifPool | None, *, guild_id: int | None = None) -> tuple[str, ...]:
     if _suppressed:
         return ()
     normalized = normalize_gif_pool(candidates)
+    if normalized and guild_id in _active_themes:
+        normalized = _active_themes[guild_id]
     if gif_delivery_status().effective_mode == "cdn":
-        return normalized
+        return tuple(name for name in normalized if not is_uploaded_gif(name) or has_gif_asset(name))
     return _available_gifs_cached(normalized)
 
 
@@ -365,8 +400,9 @@ def choose_gif(
     *,
     force_new: bool = False,
     existing_urls: Iterable[str] = (),
+    guild_id: int | None = None,
 ) -> str | None:
-    pool = available_gifs(candidates)
+    pool = available_gifs(candidates, guild_id=guild_id)
     if not pool:
         return None
 
@@ -382,7 +418,7 @@ def choose_gif(
     if existing:
         return existing[0]
 
-    if gif_delivery_status().effective_mode == "local" and not claim_local_gif_upload_slot():
+    if any(gif_uses_local_file(name) for name in pool) and not claim_local_gif_upload_slot():
         return None
 
     current = {attachment.filename for attachment in attachments if attachment.filename in pool}
@@ -394,7 +430,7 @@ def gif_file(filename: str | None) -> discord.File | None:
     if (
         not filename
         or _suppressed
-        or gif_delivery_status().effective_mode != "local"
+        or not gif_uses_local_file(filename)
         or not has_gif_asset(filename)
     ):
         return None
@@ -436,8 +472,10 @@ def retained_non_gif_attachments(message: discord.Message) -> list[discord.Attac
     return [attachment for attachment in message.attachments if not is_gif_filename(attachment.filename)]
 
 
-def random_embed_gif_kwargs(embed: discord.Embed, candidates: GifPool) -> dict:
-    filename = choose_gif(candidates)
+def random_embed_gif_kwargs(
+    embed: discord.Embed, candidates: GifPool, *, guild_id: int | None = None,
+) -> dict:
+    filename = choose_gif(candidates, guild_id=guild_id)
     file = gif_file(filename)
     media_url = gif_media_url(filename)
     if media_url is None:
@@ -465,6 +503,7 @@ def panel_embed_edit_kwargs(
         message.attachments,
         force_new=force_new,
         existing_urls=message_media_urls(message),
+        guild_id=getattr(getattr(message, "guild", None), "id", None),
     )
     if filename is None:
         embed.set_image(url=None)
@@ -473,7 +512,7 @@ def panel_embed_edit_kwargs(
         update["embed"] = brand_embed(embed)
         return update
     embed.set_image(url=gif_media_url(filename))
-    local_mode = gif_delivery_status().effective_mode == "local"
+    local_mode = gif_uses_local_file(filename)
     needs_local_file = local_mode and not any(
         attachment.filename == filename for attachment in message.attachments
     )
@@ -493,7 +532,8 @@ def panel_embed_edit_kwargs(
         if attachments:
             update["attachments"] = attachments
     elif needs_logo:
-        update["attachments"] = [*branded_files(), *message.attachments]
+        retained = message.attachments if local_mode else retained_non_gif_attachments(message)
+        update["attachments"] = [*branded_files(), *retained]
     elif stale_local_gif:
         update["attachments"] = retained_non_gif_attachments(message)
     update["embed"] = brand_embed(embed)

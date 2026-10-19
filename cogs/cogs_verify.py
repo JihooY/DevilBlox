@@ -16,13 +16,16 @@ from utils.embeds import (
 )
 from utils.gifs import (
     VERIFY_GIFS,
+    active_gif_theme,
     choose_gif,
     claim_local_gif_upload_slot,
     gif_file,
     gif_file_from_folder,
     gif_delivery_status,
     gif_media_url,
+    gif_uses_local_file,
     is_gif_filename,
+    message_media_urls,
     retained_non_gif_attachments,
 )
 from utils.panels import save_panel_location
@@ -273,6 +276,10 @@ class VerifyPad(discord.ui.LayoutView):
             await interaction.response.edit_message(**self._edit_kwargs())
             return
 
+        # Another confirm may have awaited settings while this one was running.
+        if self.controls_disabled:
+            await interaction.response.send_message(self.text[13], ephemeral=True)
+            return
         self.disable_controls()
         await interaction.response.defer()
         user = await self.cog.users.get(interaction.guild.id, interaction.user.id)
@@ -317,7 +324,8 @@ class VerifyPad(discord.ui.LayoutView):
 
 
 class VerifyStartView(discord.ui.LayoutView):
-    def __init__(self, cog: "VerificationCog", *, include_media: bool = True):
+    def __init__(self, cog: "VerificationCog", *, include_media: bool = True,
+                 gif_name: str | None = "verify_panel.gif"):
         super().__init__(timeout=None)
         self.cog = cog
         container = discord.ui.Container(accent_color=COLOR_DARK)
@@ -326,7 +334,7 @@ class VerifyStartView(discord.ui.LayoutView):
             "## DEVILBLOX VERIFICATION\n서버 이용을 시작하려면 아래 버튼으로 인증을 완료해주세요.",
         )
         if include_media:
-            _add_gif_media(container, "verify_panel.gif", "DevilBlox verification panel")
+            _add_gif_media(container, gif_name, "DevilBlox verification panel")
         container.add_item(discord.ui.Separator(spacing=discord.SeparatorSpacing.small))
         start = discord.ui.Button(
             label="START VERIFICATION",
@@ -396,7 +404,7 @@ class VerifyLanguageView(discord.ui.LayoutView):
             self.stop()
             return
         code = "".join(secrets.choice("0123456789") for _ in range(4))
-        gif_name = choose_gif(VERIFY_GIFS)
+        gif_name = choose_gif(VERIFY_GIFS, guild_id=interaction.guild.id)
         view = VerifyPad(self.cog, interaction.user.id, code, gif_name, language)
         files = branded_files(gif_file(gif_name))
         view.message = await interaction.edit_original_response(
@@ -428,8 +436,9 @@ class VerificationCog(commands.Cog):
     def users(self):
         return self.bot.repos.users
 
-    def build_verify_panel_view(self, *, include_media: bool = True) -> VerifyStartView:
-        return VerifyStartView(self, include_media=include_media)
+    def build_verify_panel_view(self, *, include_media: bool = True,
+                                gif_name: str | None = "verify_panel.gif") -> VerifyStartView:
+        return VerifyStartView(self, include_media=include_media, gif_name=gif_name)
 
     async def refresh_verify_panel(self, guild: discord.Guild):
         settings = await self.settings.get(guild.id)
@@ -440,6 +449,24 @@ class VerificationCog(commands.Cog):
 
         try:
             message = await channel.fetch_message(message_id)
+            if active_gif_theme(guild.id) is not None:
+                filename = choose_gif(
+                    VERIFY_GIFS, message.attachments,
+                    existing_urls=message_media_urls(message), guild_id=guild.id,
+                )
+                retained = retained_non_gif_attachments(message)
+                if not any(a.filename == BRAND_LOGO_FILENAME for a in retained):
+                    retained = [*branded_files(), *retained]
+                if gif_uses_local_file(filename):
+                    existing = next((a for a in message.attachments if a.filename == filename), None)
+                    file = existing or gif_file(filename)
+                    if file is not None:
+                        retained.append(file)
+                await message.edit(**{
+                    "content": None, "embeds": [], "attachments": retained,
+                    "view": self.build_verify_panel_view(include_media=bool(filename), gif_name=filename),
+                })
+                return
             status = gif_delivery_status()
             gif_attachments = [
                 attachment
@@ -518,10 +545,15 @@ class VerificationCog(commands.Cog):
     @app_commands.default_permissions(administrator=True)
     async def verify_panel(self, interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True, thinking=True)
-        status = gif_delivery_status()
-        include_media = status.effective_mode != "local" or claim_local_gif_upload_slot()
-        file = gif_file_from_folder("verify_panel.gif", "banners") if include_media else None
-        view = self.build_verify_panel_view(include_media=include_media)
+        if active_gif_theme(interaction.guild.id) is not None:
+            filename = choose_gif(VERIFY_GIFS, guild_id=interaction.guild.id)
+            file = gif_file(filename)
+            view = self.build_verify_panel_view(include_media=bool(filename), gif_name=filename)
+        else:
+            status = gif_delivery_status()
+            include_media = status.effective_mode != "local" or claim_local_gif_upload_slot()
+            file = gif_file_from_folder("verify_panel.gif", "banners") if include_media else None
+            view = self.build_verify_panel_view(include_media=include_media)
 
         message = await interaction.channel.send(**_verify_send_kwargs(view, file))
         await save_panel_location(

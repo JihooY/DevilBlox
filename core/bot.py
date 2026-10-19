@@ -15,6 +15,7 @@ from database import Repositories
 from database.mongo import MongoRuntime
 from utils.embeds import install_branding_hooks
 from utils.gifs import configure_gif_delivery, gif_delivery_status
+from services.themes import ThemeService
 
 from .cog_loader import CogLoadReport, load_cogs
 from .config import AppConfig
@@ -72,6 +73,8 @@ class DevilBloxBot(commands.Bot):
         self.db = await self.mongo_runtime.connect()
         self.repos = Repositories(self.db)
         await self.repos.ensure_indexes()
+        self.themes = ThemeService(self.repos.themes)
+        await self.themes.load()
 
         self.cog_report = await load_cogs(
             self,

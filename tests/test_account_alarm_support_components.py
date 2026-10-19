@@ -221,8 +221,8 @@ class SavedPanelMigrationTests(unittest.IsolatedAsyncioTestCase):
                     patch.object(module, "gif_media_url", return_value="attachment://panel.gif"),
                     patch.object(
                         module,
-                        "gif_delivery_status",
-                        return_value=SimpleNamespace(effective_mode="local"),
+                        "gif_uses_local_file",
+                        return_value=True,
                     ),
                 ):
                     await getattr(cog, refresh_name)(guild, rotate_image=True)
@@ -255,8 +255,8 @@ class SavedPanelMigrationTests(unittest.IsolatedAsyncioTestCase):
         for module, view_type in cases:
             with self.subTest(view=view_type.__name__), patch.object(
                 module,
-                "gif_delivery_status",
-                return_value=SimpleNamespace(effective_mode="cdn"),
+                "gif_uses_local_file",
+                return_value=False,
             ):
                 view = view_type(SimpleNamespace())
                 kwargs = module._panel_edit_kwargs(message, view, "new.gif")

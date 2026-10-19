@@ -94,7 +94,7 @@ class EventsCog(commands.Cog):
         reset_at = int(time.time())
         await self.sync_seller_current_tickets(interaction.guild)
         embed = await self.build_ticket_condition_embed(interaction.guild, reset_at=reset_at)
-        message = await interaction.channel.send(**random_embed_gif_kwargs(embed, TICKET_CONDITION_GIFS))
+        message = await interaction.channel.send(**random_embed_gif_kwargs(embed, TICKET_CONDITION_GIFS, guild_id=interaction.guild.id))
         await self.repos.settings.set_value(interaction.guild.id, "channels", "ticket_condition", interaction.channel.id)
         await self.repos.settings.set_value(interaction.guild.id, "meta", "ticket_condition_message_id", message.id)
         await self.repos.settings.set_value(interaction.guild.id, "meta", "ticket_condition_reset_at", reset_at)

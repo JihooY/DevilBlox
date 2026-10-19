@@ -220,7 +220,7 @@ class VendingTranslationTests(unittest.IsolatedAsyncioTestCase):
                 event = interaction()
                 event.message = SimpleNamespace(id=9)
                 event.user.mention = "<@2>"
-                with patch("cogs.cogs_vending_archive.random_embed_gif_kwargs", side_effect=lambda embed, _: {"embed": embed}):
+                with patch("cogs.cogs_vending_archive.random_embed_gif_kwargs", side_effect=lambda embed, _, **kwargs: {"embed": embed}):
                     await cog.handle_approve_charge(event)
                     dm = cog.send_user_dm.await_args.args[2]
                     self.assertEqual(dm.title, tr("충전 수락", language))

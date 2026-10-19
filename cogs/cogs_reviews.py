@@ -272,7 +272,7 @@ class ReviewsCog(commands.Cog):
         if user is None:
             return False
 
-        gif_name = choose_gif(SUCCESS_GIFS)
+        gif_name = choose_gif(SUCCESS_GIFS, guild_id=guild.id)
         try:
             await user.send(
                 view=ReviewRequestView(self, doc["_id"], review=doc, gif_name=gif_name),

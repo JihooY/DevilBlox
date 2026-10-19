@@ -62,7 +62,9 @@ class VendingComponentLayoutTests(unittest.TestCase):
             5,
         )
         buttons = view_buttons(view)
-        self.assertEqual(len(buttons), 4)
+        self.assertEqual(len(buttons), 5)
+        self.assertIn("devilblox:vending:profile", {button.custom_id for button in buttons})
+        self.assertFalse(any(isinstance(item, discord.ui.Select) for item in view.walk_children()))
 
     def test_product_select_shows_stock_count_for_stock_products_only(self) -> None:
         products = [

@@ -24,7 +24,7 @@ from utils.gifs import (
     TICKET_OPEN_GIFS,
     TICKET_STATE_GIFS,
     choose_gif,
-    gif_delivery_status,
+    gif_uses_local_file,
     gif_file,
     gif_media_url,
     message_media_urls,
@@ -88,7 +88,7 @@ def _panel_edit_kwargs(
     retained = list(retained_non_gif_attachments(message))
     if not any(item.filename == BRAND_LOGO_FILENAME for item in retained):
         retained = [*branded_files(), *retained]
-    if gif_name and gif_delivery_status().effective_mode == "local":
+    if gif_uses_local_file(gif_name):
         existing = next(
             (item for item in message.attachments if item.filename == gif_name),
             None,
@@ -525,7 +525,7 @@ class PurchaseCog(commands.Cog):
         await self.add_seller_current_ticket(guild.id, seller.id, channel.id)
         await self.refresh_ticket_condition_panel(guild)
 
-        gif_name = choose_gif(TICKET_OPEN_GIFS)
+        gif_name = choose_gif(TICKET_OPEN_GIFS, guild_id=interaction.guild.id)
         ticket_view = PurchaseTicketView(buyer=interaction.user, seller=seller, coupon=coupon, gif_name=gif_name)
         ticket_message = await channel.send(
             view=ticket_view,
@@ -617,6 +617,7 @@ class PurchaseCog(commands.Cog):
                 message.attachments,
                 force_new=rotate_image,
                 existing_urls=message_media_urls(message),
+                guild_id=guild.id,
             )
             view = PurchasePanelView(self, sellers, gif_name)
             await message.edit(**_panel_edit_kwargs(message, view, gif_name))
@@ -648,7 +649,7 @@ class PurchaseCog(commands.Cog):
         await self.repos.sellers.upsert(interaction.guild.id, 셀러.id, 셀러.display_name)
         embed = success_embed("셀러 등록 완료", f"{셀러.mention}")
         await interaction.followup.send(
-            **random_embed_gif_kwargs(embed, SUCCESS_GIFS),
+            **random_embed_gif_kwargs(embed, SUCCESS_GIFS, guild_id=interaction.guild.id),
             ephemeral=True,
         )
         await self.refresh_purchase_panel(interaction.guild)
@@ -665,7 +666,7 @@ class PurchaseCog(commands.Cog):
             )
             return
 
-        gif_name = choose_gif(PANEL_GIFS)
+        gif_name = choose_gif(PANEL_GIFS, guild_id=interaction.guild.id)
         view = PurchasePanelView(self, sellers, gif_name)
         message = await interaction.channel.send(**_panel_send_kwargs(view, gif_name))
         await save_panel_location(
@@ -751,7 +752,7 @@ class PurchaseCog(commands.Cog):
                 value=f"구매 금액이 0원이므로 `{ticket['coupon_code']}` 쿠폰을 차감하지 않았습니다.",
                 inline=False,
             )
-        await channel.send(**random_embed_gif_kwargs(embed, TICKET_CLOSE_GIFS))
+        await channel.send(**random_embed_gif_kwargs(embed, TICKET_CLOSE_GIFS, guild_id=interaction.guild.id))
         transcript = await collect_channel_transcript(channel)
         await self.repos.tickets.save_transcript(ticket, transcript)
         await self.repos.tickets.close(
@@ -810,7 +811,7 @@ class PurchaseCog(commands.Cog):
                     embed.add_field(name="카테고리", value=f"{category['name']} (`{category['category_id']}`)", inline=False)
                 timestamp = int(closed_at.timestamp())
                 embed.add_field(name="구매 시간", value=f"<t:{timestamp}:F> (<t:{timestamp}:R>)", inline=False)
-                await log_channel.send(**random_embed_gif_kwargs(embed, SUCCESS_GIFS))
+                await log_channel.send(**random_embed_gif_kwargs(embed, SUCCESS_GIFS, guild_id=interaction.guild.id))
 
             reviews_cog = self.bot.get_cog("ReviewsCog")
             if reviews_cog is not None:
@@ -893,7 +894,7 @@ class PurchaseCog(commands.Cog):
 
         await channel.send(
             content=mention_role.mention if mention_role else None,
-            **random_embed_gif_kwargs(embed, TICKET_STATE_GIFS),
+            **random_embed_gif_kwargs(embed, TICKET_STATE_GIFS, guild_id=interaction.guild.id),
             allowed_mentions=discord.AllowedMentions(roles=True, users=False, everyone=False),
         )
 
@@ -933,7 +934,7 @@ class PurchaseCog(commands.Cog):
         await self.repos.sellers.set_payment_account(interaction.guild.id, target.id, 계좌정보)
         embed = success_embed("계좌 등록 완료", f"{target.mention} 계좌 확인 명령어로 표시됩니다.")
         await interaction.followup.send(
-            **random_embed_gif_kwargs(embed, SUCCESS_GIFS),
+            **random_embed_gif_kwargs(embed, SUCCESS_GIFS, guild_id=interaction.guild.id),
             ephemeral=True,
         )
 

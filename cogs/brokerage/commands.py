@@ -86,7 +86,7 @@ class BrokerageCommandMixin:
             return
 
         await interaction.response.defer(ephemeral=True)
-        gif_name = choose_gif(PANEL_GIFS)
+        gif_name = choose_gif(PANEL_GIFS, guild_id=interaction.guild.id)
         view = BrokerageRulesView(gif_name)
         message = await interaction.channel.send(
             **_layout_send_kwargs(view, gif_name=gif_name)

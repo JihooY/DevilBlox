@@ -10,7 +10,7 @@ from utils.embeds import BRAND_LOGO_FILENAME, brand_embed, branded_files
 from utils.gifs import (
     GifPool,
     choose_gif,
-    gif_delivery_status,
+    gif_uses_local_file,
     gif_file,
     gif_media_url,
     is_gif_filename,
@@ -113,10 +113,11 @@ async def restore_panel_message(
             message.attachments,
             force_new=rotate_image,
             existing_urls=message_media_urls(message),
+            guild_id=guild.id,
         )
         if image_filename:
             embed.set_image(url=gif_media_url(image_filename))
-            local_mode = gif_delivery_status().effective_mode == "local"
+            local_mode = gif_uses_local_file(image_filename)
             needs_local_file = local_mode and not any(
                 attachment.filename == image_filename for attachment in message.attachments
             )
@@ -136,7 +137,8 @@ async def restore_panel_message(
                 if attachments:
                     update["attachments"] = attachments
             elif needs_logo:
-                update["attachments"] = [*branded_files(), *message.attachments]
+                retained = message.attachments if local_mode else retained_non_gif_attachments(message)
+                update["attachments"] = [*branded_files(), *retained]
             elif stale_local_gif:
                 update["attachments"] = retained_non_gif_attachments(message)
         else:

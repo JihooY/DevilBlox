@@ -92,6 +92,7 @@ class OperationsComponentsTests(unittest.IsolatedAsyncioTestCase):
                 "devilblox:operations:force-mitigation",
                 "devilblox:operations:auto-mode",
                 "devilblox:operations:cleanup-gifs",
+                "devilblox:operations:themes",
             },
         )
 

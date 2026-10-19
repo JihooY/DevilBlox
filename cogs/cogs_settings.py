@@ -19,6 +19,14 @@ class SettingsCog(commands.Cog):
     def settings(self):
         return self.bot.repos.settings
 
+    @app_commands.command(name="테마관리", description="GIF 테마를 만들고 적용하거나 GIF를 추가합니다.")
+    @app_commands.guild_only()
+    @app_commands.default_permissions(administrator=True)
+    async def theme_manager(self, interaction: discord.Interaction):
+        from cogs.theme_views import open_theme_manager
+
+        await open_theme_manager(self.bot, interaction)
+
     @app_commands.command(name="역할설정", description="봇에서 사용할 역할을 설정합니다.")
     @app_commands.default_permissions(administrator=True)
     @app_commands.choices(종류=ROLE_CHOICES)

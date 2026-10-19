@@ -15,7 +15,7 @@ from utils.embeds import (
 from utils.gifs import (
     PANEL_GIFS,
     choose_gif,
-    gif_delivery_status,
+    gif_uses_local_file,
     gif_file,
     gif_media_url,
     message_media_urls,
@@ -41,7 +41,7 @@ def _panel_edit_kwargs(
     retained = list(retained_non_gif_attachments(message))
     if not any(item.filename == BRAND_LOGO_FILENAME for item in retained):
         retained = [*branded_files(), *retained]
-    if gif_name and gif_delivery_status().effective_mode == "local":
+    if gif_uses_local_file(gif_name):
         existing = next(
             (item for item in message.attachments if item.filename == gif_name),
             None,
@@ -167,6 +167,7 @@ class AlarmCog(commands.Cog):
                 message.attachments,
                 force_new=rotate_image,
                 existing_urls=message_media_urls(message),
+                guild_id=guild.id,
             )
             view = AlarmView(self, gif_name)
             await message.edit(**_panel_edit_kwargs(message, view, gif_name))
@@ -192,7 +193,7 @@ class AlarmCog(commands.Cog):
     @app_commands.command(name="알림패널", description="현재 채널에 알림 설정 패널을 생성합니다.")
     @app_commands.default_permissions(administrator=True)
     async def alarm_panel(self, interaction: discord.Interaction):
-        gif_name = choose_gif(PANEL_GIFS)
+        gif_name = choose_gif(PANEL_GIFS, guild_id=interaction.guild.id)
         view = AlarmView(self, gif_name)
         message = await interaction.channel.send(
             **_panel_send_kwargs(view, gif_name),

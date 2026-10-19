@@ -17,6 +17,7 @@ from .vending import (
     VendingStockUnitStore,
 )
 from .warnings import WarningStore
+from .themes import ThemeStore
 
 
 class Repositories:
@@ -41,6 +42,7 @@ class Repositories:
         self.reviews = ReviewStore(db)
         self.warnings = WarningStore(db)
         self.operations = OperationsStateStore(db)
+        self.themes = ThemeStore(db)
 
     async def ensure_indexes(self):
         stores = (
@@ -61,6 +63,7 @@ class Repositories:
             self.reviews,
             self.warnings,
             self.operations,
+            self.themes,
         )
         for store in stores:
             await store.ensure_indexes()

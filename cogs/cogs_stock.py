@@ -527,7 +527,7 @@ class StockCog(commands.Cog):
         await self.refresh_stock_condition_panel(interaction.guild)
         embed = success_embed("재고 상품 등록 완료", f"`{item['item_id']}`: {int(item.get('quantity', 0) or 0)}개")
         await interaction.followup.send(
-            **random_embed_gif_kwargs(embed, SUCCESS_GIFS),
+            **random_embed_gif_kwargs(embed, SUCCESS_GIFS, guild_id=interaction.guild.id),
             ephemeral=True,
         )
 

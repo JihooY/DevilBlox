@@ -13,7 +13,7 @@ class ProjectConfigurationTests(unittest.TestCase):
         project = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
         dependencies = project["project"]["dependencies"]
 
-        self.assertIn("discord.py>=2.6.0", dependencies)
+        self.assertIn("discord.py>=2.7.0", dependencies)
         self.assertIn("pymongo>=4.13.0", dependencies)
         self.assertFalse(any(item.casefold().startswith("motor") for item in dependencies))
 
@@ -28,7 +28,7 @@ class ProjectConfigurationTests(unittest.TestCase):
             item["name"]: item.get("specifier")
             for item in root_package["metadata"]["requires-dist"]
         }
-        self.assertEqual(requirements["discord-py"], ">=2.6.0")
+        self.assertEqual(requirements["discord-py"], ">=2.7.0")
         self.assertEqual(requirements["pymongo"], ">=4.13.0")
 
     def test_ci_uses_locked_uv_install_and_the_full_suite(self) -> None:

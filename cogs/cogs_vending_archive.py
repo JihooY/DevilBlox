@@ -63,7 +63,7 @@ from utils.gifs import (
     SUCCESS_GIFS,
     VENDING_PANEL_GIFS,
     choose_gif,
-    gif_delivery_status,
+    gif_uses_local_file,
     gif_file,
     is_gif_filename,
     message_media_urls,
@@ -397,7 +397,7 @@ class VendingArchiveCog(commands.Cog):
             await channel.send(embed=embed)
             return
         gif_pool = SUCCESS_GIFS if charge.get("success") else DENIED_GIFS
-        await channel.send(**random_embed_gif_kwargs(embed, gif_pool))
+        await channel.send(**random_embed_gif_kwargs(embed, gif_pool, guild_id=guild.id))
 
     async def send_charge_request_log(
         self,
@@ -443,7 +443,7 @@ class VendingArchiveCog(commands.Cog):
             embed.add_field(name="가격", value=f"{price:,}원", inline=True)
             if time_value:
                 embed.add_field(name="구매 시간", value=time_value, inline=False)
-            await vending_log_channel.send(**random_embed_gif_kwargs(embed, SUCCESS_GIFS))
+            await vending_log_channel.send(**random_embed_gif_kwargs(embed, SUCCESS_GIFS, guild_id=guild.id))
 
         purchase_log_channel = await self.get_purchase_log_channel(guild)
         if purchase_log_channel and (not vending_log_channel or purchase_log_channel.id != vending_log_channel.id):
@@ -451,7 +451,7 @@ class VendingArchiveCog(commands.Cog):
             embed.add_field(name="구매 상품", value=product_title, inline=True)
             if time_value:
                 embed.add_field(name="구매 시간", value=time_value, inline=False)
-            await purchase_log_channel.send(**random_embed_gif_kwargs(embed, SUCCESS_GIFS))
+            await purchase_log_channel.send(**random_embed_gif_kwargs(embed, SUCCESS_GIFS, guild_id=guild.id))
 
     async def send_user_dm(self, guild: discord.Guild, user_id: int, embed: discord.Embed):
         user = guild.get_member(user_id) or self.bot.get_user(user_id)
@@ -710,7 +710,7 @@ class VendingArchiveCog(commands.Cog):
             ),
         )
         embed = success_embed("충전 수락 완료")
-        await interaction.followup.send(**random_embed_gif_kwargs(embed, SUCCESS_GIFS), ephemeral=True)
+        await interaction.followup.send(**random_embed_gif_kwargs(embed, SUCCESS_GIFS, guild_id=interaction.guild.id), ephemeral=True)
 
     async def handle_reject_charge(self, interaction: discord.Interaction, admin_message_id: int, reason: str):
         await interaction.response.defer(ephemeral=True)
@@ -743,7 +743,7 @@ class VendingArchiveCog(commands.Cog):
             ),
         )
         embed = success_embed("충전 거절 완료")
-        await interaction.followup.send(**random_embed_gif_kwargs(embed, DENIED_GIFS), ephemeral=True)
+        await interaction.followup.send(**random_embed_gif_kwargs(embed, DENIED_GIFS, guild_id=interaction.guild.id), ephemeral=True)
 
     async def handle_category_menu(self, interaction: discord.Interaction, mode: str):
         await interaction.response.defer(ephemeral=True)
@@ -1275,10 +1275,11 @@ class VendingArchiveCog(commands.Cog):
                 message.attachments,
                 force_new=rotate_image,
                 existing_urls=message_media_urls(message),
+                guild_id=guild.id,
             )
             panel_view = view(image_filename) if callable(view) else view
             update = {"content": None, "embeds": [], "view": panel_view}
-            local_mode = gif_delivery_status().effective_mode == "local"
+            local_mode = gif_uses_local_file(image_filename)
             needs_logo = not any(attachment.filename == BRAND_LOGO_FILENAME for attachment in message.attachments)
             needs_image = local_mode and bool(image_filename) and not any(
                 attachment.filename == image_filename for attachment in message.attachments
@@ -1293,7 +1294,8 @@ class VendingArchiveCog(commands.Cog):
                 if attachments:
                     update["attachments"] = attachments
             elif needs_logo:
-                update["attachments"] = [*branded_files(), *message.attachments]
+                retained = message.attachments if local_mode else retained_non_gif_attachments(message)
+                update["attachments"] = [*branded_files(), *retained]
             elif not local_mode and any(
                 is_gif_filename(attachment.filename) for attachment in message.attachments
             ):
@@ -1310,7 +1312,7 @@ class VendingArchiveCog(commands.Cog):
     @app_commands.default_permissions(administrator=True)
     async def vending_panel(self, interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True)
-        image_filename = choose_gif(VENDING_PANEL_GIFS)
+        image_filename = choose_gif(VENDING_PANEL_GIFS, guild_id=interaction.guild.id)
         file = gif_file(image_filename)
         kwargs = {"view": await self.build_vending_panel_view(interaction.guild.id, image_filename)}
         files = branded_files(file)
@@ -1326,13 +1328,13 @@ class VendingArchiveCog(commands.Cog):
             message.id,
         )
         embed = success_embed("자판기 패널 생성 완료")
-        await interaction.followup.send(**random_embed_gif_kwargs(embed, SUCCESS_GIFS), ephemeral=True)
+        await interaction.followup.send(**random_embed_gif_kwargs(embed, SUCCESS_GIFS, guild_id=interaction.guild.id), ephemeral=True)
 
     @app_commands.command(name="아카이브패널", description="현재 채널에 아카이브 검색 패널을 생성합니다.")
     @app_commands.default_permissions(administrator=True)
     async def archive_panel(self, interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True)
-        image_filename = choose_gif(ARCHIVE_PANEL_GIFS)
+        image_filename = choose_gif(ARCHIVE_PANEL_GIFS, guild_id=interaction.guild.id)
         file = gif_file(image_filename)
         kwargs = {"view": ArchivePanelView(self, gif_name=image_filename)}
         files = branded_files(file)
@@ -1348,7 +1350,7 @@ class VendingArchiveCog(commands.Cog):
             message.id,
         )
         embed = success_embed("아카이브 패널 생성 완료")
-        await interaction.followup.send(**random_embed_gif_kwargs(embed, SUCCESS_GIFS), ephemeral=True)
+        await interaction.followup.send(**random_embed_gif_kwargs(embed, SUCCESS_GIFS, guild_id=interaction.guild.id), ephemeral=True)
 
     @app_commands.command(name="아카이브검색", description="유튜브 URL로 아카이브를 검색합니다.")
     @app_commands.default_permissions(send_messages=True)
@@ -1847,7 +1849,7 @@ class VendingArchiveCog(commands.Cog):
         if message:
             embed.add_field(name="안내", value=message, inline=False)
 
-        send_kwargs = random_embed_gif_kwargs(embed, SUCCESS_GIFS)
+        send_kwargs = random_embed_gif_kwargs(embed, SUCCESS_GIFS, guild_id=interaction.guild.id)
         if role_id:
             send_kwargs["content"] = f"<@&{role_id}>"
             send_kwargs["allowed_mentions"] = discord.AllowedMentions(roles=[discord.Object(id=role_id)])

@@ -20,7 +20,7 @@ from utils.gifs import (
     TICKET_CLOSE_GIFS,
     TICKET_OPEN_GIFS,
     choose_gif,
-    gif_delivery_status,
+    gif_uses_local_file,
     gif_file,
     gif_media_url,
     message_media_urls,
@@ -49,7 +49,7 @@ def _panel_edit_kwargs(
     retained = list(retained_non_gif_attachments(message))
     if not any(item.filename == BRAND_LOGO_FILENAME for item in retained):
         retained = [*branded_files(), *retained]
-    if gif_name and gif_delivery_status().effective_mode == "local":
+    if gif_uses_local_file(gif_name):
         existing = next(
             (item for item in message.attachments if item.filename == gif_name),
             None,
@@ -132,6 +132,7 @@ class SupportCog(commands.Cog):
                 message.attachments,
                 force_new=rotate_image,
                 existing_urls=message_media_urls(message),
+                guild_id=guild.id,
             )
             view = SupportView(self, gif_name)
             await message.edit(**_panel_edit_kwargs(message, view, gif_name))
@@ -245,7 +246,7 @@ class SupportCog(commands.Cog):
         embed = info_embed("SUPPORT", f"{interaction.user.mention}님이 문의를 시작했습니다.")
         ticket_message = await channel.send(
             content=f"{interaction.user.mention} {admin_role.mention}",
-            **random_embed_gif_kwargs(embed, TICKET_OPEN_GIFS),
+            **random_embed_gif_kwargs(embed, TICKET_OPEN_GIFS, guild_id=interaction.guild.id),
         )
         await self.repos.tickets.set_panel_message(guild.id, channel.id, ticket_message.id)
         await interaction.followup.send(embed=success_embed("문의 티켓 생성 완료", channel.mention), ephemeral=True)
@@ -253,7 +254,7 @@ class SupportCog(commands.Cog):
     @app_commands.command(name="문의패널", description="현재 채널에 문의 패널을 생성합니다.")
     @app_commands.default_permissions(administrator=True)
     async def support_panel(self, interaction: discord.Interaction):
-        gif_name = choose_gif(PANEL_GIFS)
+        gif_name = choose_gif(PANEL_GIFS, guild_id=interaction.guild.id)
         view = SupportView(self, gif_name)
         message = await interaction.channel.send(
             **_panel_send_kwargs(view, gif_name),
@@ -285,7 +286,7 @@ class SupportCog(commands.Cog):
             await deny_ticket_access(interaction.channel, member)
         delete_notice = "대화 기록을 저장한 뒤 10초 후 채널이 자동 삭제됩니다." if 채널삭제 else "대화 기록을 저장하고 채널은 유지됩니다."
         embed = success_embed("문의 종료", delete_notice)
-        await interaction.channel.send(**random_embed_gif_kwargs(embed, TICKET_CLOSE_GIFS))
+        await interaction.channel.send(**random_embed_gif_kwargs(embed, TICKET_CLOSE_GIFS, guild_id=interaction.guild.id))
         transcript = await self._collect_transcript(interaction.channel)
         await self.repos.tickets.save_transcript(ticket, transcript)
         await self.repos.tickets.close(interaction.guild.id, interaction.channel_id, closed_by=interaction.user.id)

@@ -21,7 +21,7 @@ from utils.gifs import (
     TICKET_CLOSE_GIFS,
     TICKET_OPEN_GIFS,
     choose_gif,
-    gif_delivery_status,
+    gif_uses_local_file,
     gif_file,
     gif_media_url,
     message_media_urls,
@@ -76,7 +76,7 @@ def _panel_edit_kwargs(
     retained = list(retained_non_gif_attachments(message))
     if not any(item.filename == BRAND_LOGO_FILENAME for item in retained):
         retained = [*branded_files(), *retained]
-    if gif_name and gif_delivery_status().effective_mode == "local":
+    if gif_uses_local_file(gif_name):
         existing = next(
             (item for item in message.attachments if item.filename == gif_name),
             None,
@@ -335,6 +335,7 @@ class MiddlemanCog(commands.Cog):
                 message.attachments,
                 force_new=rotate_image,
                 existing_urls=message_media_urls(message),
+                guild_id=guild.id,
             )
             view = MiddlemanPanelView(self, gif_name)
             await message.edit(**_panel_edit_kwargs(message, view, gif_name))
@@ -402,7 +403,7 @@ class MiddlemanCog(commands.Cog):
         embed = info_embed("MIDDLEMAN SERVICE", "중개 티켓이 시작되었습니다.")
         ticket_message = await channel.send(
             content=f"{interaction.user.mention} {counterparty.mention} {middleman.mention}",
-            **random_embed_gif_kwargs(embed, TICKET_OPEN_GIFS),
+            **random_embed_gif_kwargs(embed, TICKET_OPEN_GIFS, guild_id=interaction.guild.id),
         )
         await self.repos.tickets.set_panel_message(guild.id, channel.id, ticket_message.id)
         draft_view.open_button.disabled = True
@@ -422,7 +423,7 @@ class MiddlemanCog(commands.Cog):
     @app_commands.command(name="중개패널", description="현재 채널에 중개 패널을 생성합니다.")
     @app_commands.default_permissions(administrator=True)
     async def middleman_panel(self, interaction: discord.Interaction):
-        gif_name = choose_gif(PANEL_GIFS)
+        gif_name = choose_gif(PANEL_GIFS, guild_id=interaction.guild.id)
         view = MiddlemanPanelView(self, gif_name)
         message = await interaction.channel.send(
             **_panel_send_kwargs(view, gif_name),
@@ -486,7 +487,7 @@ class MiddlemanCog(commands.Cog):
 
         delete_notice = "\n10초 후 채널이 삭제됩니다." if 채널삭제 else "\n채널은 삭제하지 않고 유지됩니다."
         embed = success_embed("중개 종료", f"금액: {금액:,}원{delete_notice}")
-        await interaction.channel.send(**random_embed_gif_kwargs(embed, TICKET_CLOSE_GIFS))
+        await interaction.channel.send(**random_embed_gif_kwargs(embed, TICKET_CLOSE_GIFS, guild_id=interaction.guild.id))
         if 채널삭제:
             transcript = await collect_channel_transcript(interaction.channel)
             await self.repos.tickets.save_transcript(ticket, transcript)

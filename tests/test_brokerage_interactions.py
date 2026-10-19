@@ -203,6 +203,7 @@ class BrokerageRulesCommandTests(unittest.IsolatedAsyncioTestCase):
         )
         interaction = SimpleNamespace(
             channel=channel,
+            guild=SimpleNamespace(id=1),
             response=SimpleNamespace(send_message=AsyncMock(), defer=AsyncMock()),
             followup=SimpleNamespace(send=AsyncMock()),
         )

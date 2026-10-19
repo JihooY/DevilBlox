@@ -147,12 +147,19 @@ class OperationsPanelView(discord.ui.LayoutView):
             custom_id="devilblox:operations:cleanup-gifs",
         )
         cleanup_gifs.callback = self.cleanup_gifs
+        themes = discord.ui.Button(
+            label="테마 관리",
+            style=discord.ButtonStyle.secondary,
+            custom_id="devilblox:operations:themes",
+        )
+        themes.callback = self.themes
         container.add_item(
             discord.ui.ActionRow(
                 refresh,
                 force_mitigation,
                 automatic_mode,
                 cleanup_gifs,
+                themes,
             )
         )
         self.add_item(container)
@@ -173,7 +180,7 @@ class OperationsPanelView(discord.ui.LayoutView):
         error_id = self.cog.bot.error_reporter.enqueue_exception(
             f"operations panel component={getattr(item, 'custom_id', None)} guild={interaction.guild_id}",
             error,
-            guild_id=interaction.guild_id,
+            guild_id=interaction.guild.id,
         )
         log.error(
             "Operations panel callback failed: error_id=%s",
@@ -220,7 +227,7 @@ class OperationsPanelView(discord.ui.LayoutView):
             error_id = self.cog.bot.error_reporter.enqueue_exception(
                 "fresh sample before automatic protection mode",
                 error,
-                guild_id=interaction.guild_id,
+                guild_id=interaction.guild.id,
             )
             await interaction.followup.send(
                 f"최신 상태를 확인하지 못해 절전 상태를 유지합니다. 오류 ID: `{error_id}`",
@@ -250,6 +257,11 @@ class OperationsPanelView(discord.ui.LayoutView):
             else "이미 GIF 정리를 진행 중입니다."
         )
         await interaction.followup.send(message, ephemeral=True)
+
+    async def themes(self, interaction: discord.Interaction) -> None:
+        from cogs.theme_views import open_theme_manager
+
+        await open_theme_manager(self.cog.bot, interaction)
 
 
 class OperationsCog(commands.Cog):
