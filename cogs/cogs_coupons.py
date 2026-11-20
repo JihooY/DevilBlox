@@ -37,7 +37,7 @@ class CouponCreateModal(discord.ui.Modal, title="쿠폰 생성"):
 class PromotionCreateModal(discord.ui.Modal, title="프로모션 코드 생성"):
     code = discord.ui.TextInput(label="프로모션 코드", max_length=40)
     name = discord.ui.TextInput(label="프로모션 이름 / 유튜버", max_length=100)
-    invite = discord.ui.TextInput(label="전용 초대 링크", max_length=200)
+    invite = discord.ui.TextInput(label="전용 초대 링크 (선택)", placeholder="비워두면 초대 조건 없이 사용 가능", required=False, max_length=200)
     discount = discord.ui.TextInput(label="할인율 (%)", placeholder="10", max_length=3)
 
     def __init__(self, cog):
@@ -57,14 +57,15 @@ class CouponAdminView(discord.ui.LayoutView):
     def __init__(self, cog, coupons=None, promotions=None):
         super().__init__(timeout=None); self.cog = cog
         coupons, promotions = coupons or [], promotions or []
-        lines = ["## COUPON CONTROL", "쿠폰과 초대 전용 프로모션 코드를 관리합니다.", "",
+        lines = ["## COUPON CONTROL", "쿠폰과 프로모션 코드를 관리합니다. 초대 링크 없이도 프로모션을 생성할 수 있습니다.", "",
                  f"활성 쿠폰 `{len(coupons)}`개 · 프로모션 `{len(promotions)}`개"]
         for item in coupons[:6]:
             kind = "일반" if item.get("kind") == "general" else "특별"
             value = f"{int(item['discount']):,}원" if item.get("discount_type") == "fixed" else f"{item['discount']}%"
             lines.append(f"- `{item['code']}` · {item['name']} · {kind} {value}")
         for item in promotions[:4]:
-            lines.append(f"- `{item['code']}` · {item['name']} · 프로모션 {item['discount']}%")
+            condition = "초대 조건 없음" if item.get("requires_invite") is False else "전용 초대 필요"
+            lines.append(f"- `{item['code']}` · {item['name']} · 프로모션 {item['discount']}% · {condition}")
         box = discord.ui.Container(accent_color=COLOR)
         box.add_item(discord.ui.TextDisplay("\n".join(lines)))
         box.add_item(discord.ui.Separator())
@@ -175,9 +176,10 @@ class CouponCog(commands.Cog):
         await interaction.response.defer(ephemeral=True); parsed = invite_code(invite)
         try: doc = await self.repos.coupons.create_promotion(interaction.guild.id, code, name, parsed, invite, int(discount), interaction.user.id)
         except ValueError:
-            await interaction.followup.send(embed=error_embed("입력 오류", "초대 링크와 1~100 할인율을 확인해주세요."), ephemeral=True); return
-        await interaction.followup.send(embed=success_embed("프로모션 생성 완료", f"`{doc['code']}` · 초대 `{doc['invite_code']}`"), ephemeral=True)
-        await self.send_coupon_log(interaction.guild, "PROMOTION CREATED", f"{interaction.user.mention}님이 프로모션을 생성했습니다.", 코드=f"`{doc['code']}`", 이름=doc["name"], 초대_코드=f"`{doc['invite_code']}`", 할인=f"{doc['discount']}%")
+            await interaction.followup.send(embed=error_embed("입력 오류", "프로모션 코드와 1~100 할인율을 확인해주세요."), ephemeral=True); return
+        condition = "초대 조건 없음" if doc.get("requires_invite") is False else f"초대 `{doc['invite_code']}`"
+        await interaction.followup.send(embed=success_embed("프로모션 생성 완료", f"`{doc['code']}` · {doc['discount']}% · {condition}"), ephemeral=True)
+        await self.send_coupon_log(interaction.guild, "PROMOTION CREATED", f"{interaction.user.mention}님이 프로모션을 생성했습니다.", 코드=f"`{doc['code']}`", 이름=doc["name"], 사용_조건=condition, 할인=f"{doc['discount']}%")
         await self.refresh_admin_message(interaction)
 
     async def delete_code(self, interaction, code):
@@ -233,15 +235,11 @@ class CouponCog(commands.Cog):
         await interaction.followup.send(embed=success_embed("쿠폰 생성 완료", f"`{doc['code']}` · {value}"), ephemeral=True)
         await self.send_coupon_log(interaction.guild, "COUPON CREATED", f"{interaction.user.mention}님이 쿠폰을 생성했습니다.", 코드=f"`{doc['code']}`", 이름=doc["name"], 할인=value)
 
-    @app_commands.command(name="프로모션생성", description="초대 링크 전용 자판기 프로모션 코드를 생성합니다.")
+    @app_commands.command(name="프로모션생성", description="자판기 프로모션 코드를 생성합니다. 초대 링크를 생략하면 누구나 사용할 수 있습니다.")
     @app_commands.default_permissions(administrator=True)
-    async def promotion_command(self, interaction, 코드: str, 이름: str, 초대링크: str, 할인율: app_commands.Range[int, 1, 100]):
-        await interaction.response.defer(ephemeral=True); parsed = invite_code(초대링크)
-        try: doc = await self.repos.coupons.create_promotion(interaction.guild.id, 코드, 이름, parsed, 초대링크, 할인율, interaction.user.id)
-        except ValueError:
-            await interaction.followup.send(embed=error_embed("입력 오류", "초대 링크와 할인율을 확인해주세요."), ephemeral=True); return
-        await interaction.followup.send(embed=success_embed("프로모션 생성 완료", f"`{doc['code']}` · 초대 `{doc['invite_code']}`"), ephemeral=True)
-        await self.send_coupon_log(interaction.guild, "PROMOTION CREATED", f"{interaction.user.mention}님이 프로모션을 생성했습니다.", 코드=f"`{doc['code']}`", 이름=doc["name"], 초대_코드=f"`{doc['invite_code']}`", 할인=f"{doc['discount']}%")
+    @app_commands.describe(초대링크="생략하면 초대 조건 없이 누구나 사용 가능")
+    async def promotion_command(self, interaction, 코드: str, 이름: str, 할인율: app_commands.Range[int, 1, 100], 초대링크: str = ""):
+        await self.create_promotion_from_input(interaction, 코드, 이름, 초대링크, 할인율)
 
     @app_commands.command(name="쿠폰삭제", description="쿠폰 또는 프로모션 코드를 삭제합니다.")
     @app_commands.default_permissions(administrator=True)

@@ -1131,7 +1131,7 @@ class VendingArchiveCog(commands.Cog):
             return
         promo = await self.repos.coupons.validate_promotion(interaction.guild.id, interaction.user.id, code)
         if promo is None:
-            await interaction.followup.send(embed=error_embed(tr('사용 불가'), tr('해당 프로모션 전용 초대 링크로 가입한 계정만 사용할 수 있습니다.')), ephemeral=True); return
+            await interaction.followup.send(embed=error_embed(tr('사용 불가'), tr('유효한 프로모션 코드인지 확인해주세요. 초대 전용 코드는 해당 링크로 가입한 계정만 사용할 수 있습니다.')), ephemeral=True); return
         await self.repos.coupons.select_promotion(interaction.guild.id, interaction.user.id,
                                                   f"vending:{normalize_product_id(product_id)}", code)
         try:

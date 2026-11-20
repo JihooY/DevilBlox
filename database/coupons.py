@@ -37,7 +37,15 @@ class CouponStore:
         if not ownership_index_exists:
             await self.user_coupons.create_index(ownership_keys, unique=True)
         await self.promotions.create_index([("guild_id", 1), ("code", 1)], unique=True)
-        await self.promotions.create_index([("guild_id", 1), ("invite_code", 1)], unique=True)
+        invite_keys = [("guild_id", 1), ("invite_code", 1)]
+        promotion_indexes = await self.promotions.index_information()
+        for name, spec in promotion_indexes.items():
+            if list(spec.get("key", [])) == invite_keys and not spec.get("partialFilterExpression"):
+                await self.promotions.drop_index(name)
+        await self.promotions.create_index(
+            invite_keys, unique=True,
+            partialFilterExpression={"invite_code": {"$type": "string"}},
+        )
         await self.invites.create_index([("guild_id", 1), ("user_id", 1)], unique=True)
         await self.selections.create_index([("guild_id", 1), ("user_id", 1), ("context", 1)], unique=True)
         await self.redemptions.create_index([("guild_id", 1), ("user_id", 1), ("created_at", -1)])
@@ -62,16 +70,19 @@ class CouponStore:
         )
         return await self.coupons.find_one({"guild_id": guild_id, "code": code})
 
-    async def create_promotion(self, guild_id: int, code: str, name: str, invite_code: str, invite_url: str,
+    async def create_promotion(self, guild_id: int, code: str, name: str, invite_code: str | None, invite_url: str,
                                discount: int, created_by: int):
         code = normalize_code(code)
-        if not code or not invite_code or not 1 <= discount <= 100:
+        invite_code = (invite_code or "").strip() or None
+        if not code or not 1 <= discount <= 100:
             raise ValueError("invalid promotion")
         now = _now()
         await self.promotions.update_one(
             {"guild_id": guild_id, "code": code},
             {"$set": {"name": name.strip()[:100] or code, "invite_code": invite_code,
-                      "invite_url": invite_url, "discount": discount, "active": True,
+                      "invite_url": invite_url.strip() if invite_code else "",
+                      "requires_invite": invite_code is not None,
+                      "discount": discount, "active": True,
                       "updated_at": now, "created_by": created_by},
              "$setOnInsert": {"guild_id": guild_id, "code": code, "created_at": now}},
             upsert=True,
@@ -312,6 +323,10 @@ class CouponStore:
     async def validate_promotion(self, guild_id: int, user_id: int, code: str):
         promotion = await self.promotions.find_one({"guild_id": guild_id, "code": normalize_code(code), "active": True})
         if promotion is None:
+            return None
+        if promotion.get("requires_invite") is False:
+            return promotion
+        if not promotion.get("invite_code"):
             return None
         attribution = await self.invites.find_one({"guild_id": guild_id, "user_id": user_id,
                                                    "invite_code": promotion["invite_code"]})
